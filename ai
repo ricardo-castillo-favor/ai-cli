@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# ai – CLI wrapper for Claude Code and GitHub Copilot CLI
+#
+# USAGE
+#   ai [OPTIONS] <command> [DESCRIPTION]
+#   ai contact <subcommand> [NAME]
+#
+# COMMANDS
+#   debug     [description]   Debug issues in source files
+#   feature   [description]   Implement a new feature
+#   refactor  [description]   Refactor existing code
+#   review    [description]   Review code quality
+#   planning  [description]   Plan a feature or task
+#   ask       <prompt>        Send a free-form prompt
+#
+#   contact save   <name>     Save current options as a contact
+#   contact load   <name>     Load a saved contact (sets defaults)
+#   contact list              List all saved contacts
+#   contact delete <name>     Delete a saved contact
+#
+# OPTIONS
+#   -m, --model   MODEL       AI backend: claude (default) or copilot
+#   -s, --source  FILE        Source file to include (repeatable)
+#   -c, --context FILE        Additional context file
+#   -p, --prompt  TEXT        Override the task description inline
+#       --contact NAME        Load a saved contact before running
+#   -h, --help                Show this help message
+#
+# EXAMPLES
+#   ai debug -s src/main.py
+#   ai feature -s src/auth.py -c docs/auth.md "add JWT refresh tokens"
+#   ai refactor -m copilot -s lib/utils.js
+#   ai contact save myproject
+#   ai --contact myproject review
+
+set -euo pipefail
+
+# Resolve the directory containing this script so lib/*.sh can be sourced
+# regardless of where the user calls 'ai' from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/context.sh
+source "${SCRIPT_DIR}/lib/context.sh"
+# shellcheck source=lib/backends.sh
+source "${SCRIPT_DIR}/lib/backends.sh"
+# shellcheck source=lib/shortcuts.sh
+source "${SCRIPT_DIR}/lib/shortcuts.sh"
+# shellcheck source=lib/contacts.sh
+source "${SCRIPT_DIR}/lib/contacts.sh"
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+AI_MODEL="${AI_MODEL:-claude}"
+AI_CONTEXT_FILE="${AI_CONTEXT_FILE:-}"
+AI_PROMPT="${AI_PROMPT:-}"
+# AI_SOURCE_FILES is an array; keep existing value when loaded from a contact
+if [[ -z "${AI_SOURCE_FILES+x}" ]]; then
+    AI_SOURCE_FILES=()
+fi
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+usage() {
+    sed -n '/^# USAGE/,/^[^#]/{ /^#/{ s/^# \{0,1\}//; p } }' "$0"
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -m|--model)
+            AI_MODEL="${2:?'--model requires a value'}"
+            shift 2
+            ;;
+        -s|--source)
+            AI_SOURCE_FILES+=("${2:?'--source requires a file path'}")
+            shift 2
+            ;;
+        -c|--context)
+            AI_CONTEXT_FILE="${2:?'--context requires a file path'}"
+            shift 2
+            ;;
+        -p|--prompt)
+            AI_PROMPT="${2:?'--prompt requires text'}"
+            shift 2
+            ;;
+        --contact)
+            # Load a contact before processing remaining args
+            ai_contact_load "${2:?'--contact requires a contact name'}"
+            shift 2
+            ;;
+        --)
+            shift
+            POSITIONAL+=("$@")
+            break
+            ;;
+        -*)
+            echo "Error: unknown option '$1'" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]:-}"
+
+COMMAND="${1:-}"
+shift || true
+DESCRIPTION="${*:-$AI_PROMPT}"
+
+# ---------------------------------------------------------------------------
+# Command dispatch
+# ---------------------------------------------------------------------------
+case "$COMMAND" in
+    "")
+        echo "Error: no command specified." >&2
+        usage >&2
+        exit 1
+        ;;
+
+    # ── Shortcut commands ────────────────────────────────────────────────
+    debug|feature|refactor|review|planning)
+        shortcut_prompt="$(ai_shortcut_run "$COMMAND" "$DESCRIPTION")"
+        full_prompt="$(AI_SOURCE_FILES=("${AI_SOURCE_FILES[@]:-}") \
+                       AI_CONTEXT_FILE="$AI_CONTEXT_FILE" \
+                       ai_context_build_prompt "$shortcut_prompt")"
+        ai_backend_run "$full_prompt" "$AI_MODEL"
+        ;;
+
+    # ── Free-form ask ────────────────────────────────────────────────────
+    ask)
+        if [[ -z "$DESCRIPTION" ]]; then
+            echo "Error: 'ask' requires a prompt. Example: ai ask 'How does this work?'" >&2
+            exit 1
+        fi
+        full_prompt="$(ai_context_build_prompt "$DESCRIPTION")"
+        ai_backend_run "$full_prompt" "$AI_MODEL"
+        ;;
+
+    # ── Contact management ───────────────────────────────────────────────
+    contact)
+        subcommand="${1:-}"
+        shift || true
+        case "$subcommand" in
+            save)
+                contact_name="${1:?'Usage: ai contact save <name>'}"
+                # Serialise current state so save sees it
+                export AI_MODEL AI_CONTEXT_FILE AI_PROMPT
+                export AI_SOURCE_FILES
+                ai_contact_save "$contact_name"
+                ;;
+            load)
+                contact_name="${1:?'Usage: ai contact load <name>'}"
+                ai_contact_load "$contact_name"
+                echo "Contact '${contact_name}' loaded."
+                ;;
+            list)
+                ai_contact_list
+                ;;
+            delete)
+                contact_name="${1:?'Usage: ai contact delete <name>'}"
+                ai_contact_delete "$contact_name"
+                ;;
+            "")
+                echo "Error: contact subcommand required (save|load|list|delete)." >&2
+                exit 1
+                ;;
+            *)
+                echo "Error: unknown contact subcommand '${subcommand}'." >&2
+                exit 1
+                ;;
+        esac
+        ;;
+
+    *)
+        echo "Error: unknown command '${COMMAND}'." >&2
+        usage >&2
+        exit 1
+        ;;
+esac
