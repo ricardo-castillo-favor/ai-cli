@@ -1,0 +1,390 @@
+#!/bin/bash
+
+source "$HOME/.ai.env"
+
+set -euo pipefail
+
+DRY_RUN=false
+
+usage() {
+  echo "Usage:"
+  echo "  ai-cli [--dry-run|-d] claude \"free prompt\""
+  echo "  ai-cli [--dry-run|-d] claude debug \"your request\""
+  echo "  ai-cli [--dry-run|-d] claude feature \"your request\""
+  echo "  ai-cli [--dry-run|-d] claude refactor \"your request\""
+  echo "  ai-cli [--dry-run|-d] claude review \"your request\""
+  echo "  ai-cli [--dry-run|-d] claude planning \"your request\""
+  echo ""
+  echo "  ai-cli [--dry-run|-d] copilot \"free prompt\""
+  echo "  ai-cli [--dry-run|-d] copilot debug \"your request\""
+  echo "  ai-cli [--dry-run|-d] copilot feature \"your request\""
+  echo "  ai-cli [--dry-run|-d] copilot refactor \"your request\""
+  echo "  ai-cli [--dry-run|-d] copilot review \"your request\""
+  echo "  ai-cli [--dry-run|-d] copilot planning \"your request\""
+  echo ""
+  echo "Options:"
+  echo "  --dry-run, -d    Show the generated prompt without executing"
+}
+
+if [ "$#" -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+# Parse --dry-run flag
+if [[ "${1:-}" == "--dry-run" || "${1:-}" == "-d" ]]; then
+  DRY_RUN=true
+  shift
+fi
+
+PROVIDER="${1:-}"
+COMMAND="${2:-}"
+shift || true
+
+if [ "$#" -gt 0 ]; then
+  shift || true
+fi
+
+PROMPT="$*"
+
+KNOWN_COMMANDS=("debug" "feature" "refactor" "review" "planning")
+
+if [ -z "$COMMAND" ]; then
+  usage
+  exit 1
+fi
+
+if [[ ! " ${KNOWN_COMMANDS[*]} " =~ " ${COMMAND} " ]]; then
+  PROMPT="$COMMAND $PROMPT"
+  COMMAND="chat"
+fi
+
+if [ -z "${PROMPT// }" ]; then
+  PROMPT="General $COMMAND request"
+fi
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+if [ -z "$REPO_ROOT" ]; then
+  echo "Error: Not inside a git repository"
+  exit 1
+fi
+
+cd "$REPO_ROOT"
+
+BASE="$REPO_ROOT/CLAUDE.md"
+FEATURE="$REPO_ROOT/.ai-private/FEATURE.md"
+DEBUG="$REPO_ROOT/.ai-private/DEBUG.md"
+REFACTOR="$REPO_ROOT/.ai-private/REFACTOR.md"
+REVIEW="$REPO_ROOT/.ai-private/REVIEW.md"
+PLANNING="$REPO_ROOT/.ai-private/PLANNING.md"
+
+require_files() {
+  for file in "$@"; do
+    if [ ! -f "$file" ]; then
+      echo "Warning: Missing file $file (skipped)"
+    fi
+  done
+}
+
+existing_files() {
+  for file in "$@"; do
+    [ -f "$file" ] && echo "$file"
+  done
+}
+
+run_ai() {
+  local input="$1"
+  local model="${2:-}"
+  local files_display="${3:-}"
+  local prompt_no_static="${4:-$input}"
+  local dynamic_cmds="${5:-}"
+
+  echo "═══════════════════════════════════════════════════════════════"
+  echo "Provider : $PROVIDER"
+  echo "Command  : $COMMAND"
+  echo "Branch   : $(git branch --show-current)"
+  if [ -n "$model" ]; then
+    echo "Model    : $model"
+  fi
+  echo "Dry-run  : $DRY_RUN"
+  echo "═══════════════════════════════════════════════════════════════"
+
+  if [ "$DRY_RUN" = true ]; then
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════════╗"
+    echo "║                    PROVIDER COMMAND                           ║"
+    echo "╚═══════════════════════════════════════════════════════════════╝"
+    local cmd_prefix=""
+    if [ -n "$files_display" ]; then
+      cmd_prefix="cat $files_display"
+    fi
+    if [ -n "$dynamic_cmds" ]; then
+      if [ -n "$cmd_prefix" ]; then
+        cmd_prefix="{ $cmd_prefix; $dynamic_cmds; }"
+      else
+        cmd_prefix="{ $dynamic_cmds; }"
+      fi
+    fi
+    
+    case "$PROVIDER" in
+      copilot)
+        if [ -n "$cmd_prefix" ]; then
+          echo "$cmd_prefix | copilot -p \"<PROMPT>\""
+        else
+          echo "copilot -p \"<PROMPT>\""
+        fi
+        ;;
+      claude)
+        if [ -n "$cmd_prefix" ]; then
+          if [ -n "$model" ]; then
+            echo "$cmd_prefix | claude --model $model \"<PROMPT>\""
+          else
+            echo "$cmd_prefix | claude \"<PROMPT>\""
+          fi
+        else
+          if [ -n "$model" ]; then
+            echo "claude --model $model \"<PROMPT>\""
+          else
+            echo "claude \"<PROMPT>\""
+          fi
+        fi
+        ;;
+    esac
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════════╗"
+    echo "║                    <PROMPT> (without static context)          ║"
+    echo "╚═══════════════════════════════════════════════════════════════╝"
+    echo "$prompt_no_static"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "Prompt length: $(echo "$input" | wc -c | tr -d ' ') chars, $(echo "$input" | wc -l | tr -d ' ') lines"
+    echo "═══════════════════════════════════════════════════════════════"
+    return 0
+  fi
+
+  case "$PROVIDER" in
+    copilot)
+      copilot -p "$input"
+      ;;
+    claude)
+      if [ -n "$model" ]; then
+        claude --model "$model" "$input"
+      else
+        claude "$input"
+      fi
+      ;;
+    *)
+      echo "Error: Unknown provider '$PROVIDER'"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+base_repo_context() {
+  cat <<EOF
+
+### BRANCH
+$(git branch --show-current)
+
+### REPO STATUS
+$(git status --short)
+
+### RECENT COMMITS
+$(git log --oneline -8)
+
+EOF
+}
+
+changed_files_context() {
+  cat <<EOF
+
+### CHANGED FILES AGAINST MASTER
+$(git diff --name-only master...HEAD 2>/dev/null || true)
+
+EOF
+}
+
+review_context() {
+  cat <<EOF
+
+$(base_repo_context)
+
+$(changed_files_context)
+
+EOF
+}
+
+feature_context() {
+  cat <<EOF
+
+$(base_repo_context)
+
+$(changed_files_context)
+
+### RELEVANT TREE
+$(find . -maxdepth 3 \
+  -not -path "./.git/*" \
+  -not -path "./node_modules/*" \
+  -not -path "./dist/*" \
+  -not -path "./build/*" \
+  -type f | sed 's#^\./##' | head -200)
+
+EOF
+}
+
+refactor_context() {
+  cat <<EOF
+
+$(base_repo_context)
+
+### STAGED FILES
+$(git diff --cached --name-only 2>/dev/null || true)
+
+### UNSTAGED FILES
+$(git diff --name-only 2>/dev/null || true)
+
+### CHANGED FILES AGAINST MASTER
+$(git diff --name-only master...HEAD 2>/dev/null || true)
+
+EOF
+}
+
+debug_context() {
+  cat <<EOF
+
+$(base_repo_context)
+
+$(changed_files_context)
+
+### PACKAGE SCRIPTS
+$(node -e "try { const p=require('./package.json'); console.log(JSON.stringify(p.scripts,null,2)) } catch(e) {}" 2>/dev/null || true)
+
+EOF
+}
+
+planning_context() {
+  cat <<EOF
+
+$(base_repo_context)
+
+$(changed_files_context)
+
+### RELEVANT TREE
+$(find . -maxdepth 4 \
+  -not -path "./.git/*" \
+  -not -path "./node_modules/*" \
+  -not -path "./dist/*" \
+  -not -path "./build/*" \
+  -type f | sed 's#^\./##' | head -300)
+
+EOF
+}
+
+run() {
+  local instruction="$1"
+  local dynamic_context="$2"
+  local model="${3:-}"
+  local dynamic_cmds="${4:-}"
+  shift 4 || true
+
+  local files
+  files=$(existing_files "$@")
+
+  if [ -z "$files" ]; then
+    echo "Error: No valid context files found"
+    exit 1
+  fi
+
+  # Get relative file paths for display
+  local files_display
+  files_display=$(echo "$files" | sed "s|$REPO_ROOT/||g" | tr '\n' ' ')
+
+  local static_context
+  static_context="$(cat $files 2>/dev/null || true)"
+
+  local full_prompt="
+  ### TASK
+  $instruction
+
+  ### STATIC CONTEXT
+  $static_context
+
+  ### DYNAMIC CONTEXT
+  $dynamic_context
+
+  ### USER REQUEST
+  $PROMPT
+  "
+
+  # Prompt without static context (for dry-run display)
+  local prompt_no_static="
+  ### TASK
+  $instruction
+
+  ### DYNAMIC CONTEXT
+  $dynamic_context
+
+  ### USER REQUEST
+  $PROMPT
+  "
+
+  run_ai "$full_prompt" "$model" "$files_display" "$prompt_no_static" "$dynamic_cmds"
+}
+
+case "$COMMAND" in
+  chat)
+    run_ai "$PROMPT"
+    ;;
+
+  debug)
+    require_files "$BASE" "$DEBUG"
+    run "Debug the issue. Identify the likely cause, reproduction path, smallest safe fix, and useful tests." \
+      "$(debug_context)" \
+      "" \
+      "git status; git log -8; git diff --name-only master...HEAD; node package.json" \
+      "$BASE" "$DEBUG"
+    ;;
+
+  feature)
+    require_files "$BASE" "$FEATURE"
+    run "Implement the requested feature. Reuse existing project patterns and identify the right files before coding." \
+      "$(feature_context)" \
+      "" \
+      "git status; git log -8; git diff --name-only master...HEAD; find . -maxdepth 3" \
+      "$BASE" "$FEATURE"
+    ;;
+
+  refactor)
+    require_files "$BASE" "$REFACTOR"
+    run "Refactor safely. Preserve behavior, reduce complexity, avoid unnecessary changes, and suggest tests." \
+      "$(refactor_context)" \
+      "" \
+      "git status; git log -8; git diff --cached --name-only; git diff --name-only" \
+      "$BASE" "$REFACTOR"
+    ;;
+
+  review)
+    require_files "$BASE" "$REVIEW"
+    run "Review only the current branch changes. Focus on bugs, regressions, missing tests, performance issues, and risky design changes." \
+      "$(review_context)" \
+      "" \
+      "git status; git log -8; git diff --name-only master...HEAD" \
+      "$BASE" "$REVIEW"
+    ;;
+
+  planning)
+    require_files "$BASE" "$PLANNING" "$FEATURE"
+    run "Create an implementation plan before coding. Do not modify files. Return architecture, affected files, risks, order of work, and test plan." \
+      "$(planning_context)" \
+      "opus" \
+      "git status; git log -8; git diff --name-only master...HEAD; find . -maxdepth 4" \
+      "$BASE" "$PLANNING" "$FEATURE"
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac
