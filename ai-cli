@@ -8,22 +8,22 @@ DRY_RUN=false
 
 usage() {
   echo "Usage:"
-  echo "  ai-cli [--dry-run|-d] claude \"free prompt\""
-  echo "  ai-cli [--dry-run|-d] claude debug \"your request\""
-  echo "  ai-cli [--dry-run|-d] claude feature \"your request\""
-  echo "  ai-cli [--dry-run|-d] claude refactor \"your request\""
-  echo "  ai-cli [--dry-run|-d] claude review \"your request\""
-  echo "  ai-cli [--dry-run|-d] claude planning \"your request\""
+  echo "  ai-cli claude \"free prompt\""
+  echo "  ai-cli claude debug \"your request\""
+  echo "  ai-cli claude feature \"your request\""
+  echo "  ai-cli claude refactor \"your request\""
+  echo "  ai-cli claude review \"your request\""
+  echo "  ai-cli claude planning \"your request\""
   echo ""
-  echo "  ai-cli [--dry-run|-d] copilot \"free prompt\""
-  echo "  ai-cli [--dry-run|-d] copilot debug \"your request\""
-  echo "  ai-cli [--dry-run|-d] copilot feature \"your request\""
-  echo "  ai-cli [--dry-run|-d] copilot refactor \"your request\""
-  echo "  ai-cli [--dry-run|-d] copilot review \"your request\""
-  echo "  ai-cli [--dry-run|-d] copilot planning \"your request\""
+  echo "  ai-cli copilot \"free prompt\""
+  echo "  ai-cli copilot debug \"your request\""
+  echo "  ai-cli copilot feature \"your request\""
+  echo "  ai-cli copilot refactor \"your request\""
+  echo "  ai-cli copilot review \"your request\""
+  echo "  ai-cli copilot planning \"your request\""
   echo ""
   echo "Options:"
-  echo "  --dry-run, -d    Show the generated prompt without executing"
+  echo "  --dry-run, -d Show the generated prompt without executing"
 }
 
 if [ "$#" -eq 0 ]; then
@@ -72,12 +72,19 @@ fi
 
 cd "$REPO_ROOT"
 
+# Ensure .ai-private directory exists with proper permissions
+AI_PRIVATE_DIR="$REPO_ROOT/.ai-private"
+if [ ! -d "$AI_PRIVATE_DIR" ]; then
+  mkdir -p "$AI_PRIVATE_DIR"
+  chmod 755 "$AI_PRIVATE_DIR"
+fi
+
 BASE="$REPO_ROOT/CLAUDE.md"
-FEATURE="$REPO_ROOT/.ai-private/FEATURE.md"
-DEBUG="$REPO_ROOT/.ai-private/DEBUG.md"
-REFACTOR="$REPO_ROOT/.ai-private/REFACTOR.md"
-REVIEW="$REPO_ROOT/.ai-private/REVIEW.md"
-PLANNING="$REPO_ROOT/.ai-private/PLANNING.md"
+FEATURE="$AI_PRIVATE_DIR/FEATURE.md"
+DEBUG="$AI_PRIVATE_DIR/DEBUG.md"
+REFACTOR="$AI_PRIVATE_DIR/REFACTOR.md"
+REVIEW="$AI_PRIVATE_DIR/REVIEW.md"
+PLANNING="$AI_PRIVATE_DIR/PLANNING.md"
 
 require_files() {
   for file in "$@"; do
@@ -92,6 +99,14 @@ existing_files() {
     [ -f "$file" ] && echo "$file"
   done
 }
+
+# Reusable instruction for HTML task visualization
+html_task_instruction() {
+  echo "Based on the above, create a clean, interactive, professional HTML/CSS/JS self-contained 'plan.html' with modern styling (layout, colors, filters, charts). Save to $AI_PRIVATE_DIR/tasks/plan.html (create folder if needed)."
+}
+
+# Note about paths (used in prompts) - uses absolute path
+PATH_NOTE="IMPORTANT: All output files must be written to $AI_PRIVATE_DIR/ (absolute path)."
 
 run_ai() {
   local input="$1"
@@ -130,23 +145,23 @@ run_ai() {
     case "$PROVIDER" in
       copilot)
         if [ -n "$cmd_prefix" ]; then
-          echo "$cmd_prefix | copilot -p \"<PROMPT>\""
+          echo "$cmd_prefix | copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
         else
-          echo "copilot -p \"<PROMPT>\""
+          echo "copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
         fi
         ;;
       claude)
         if [ -n "$cmd_prefix" ]; then
           if [ -n "$model" ]; then
-            echo "$cmd_prefix | claude --model $model \"<PROMPT>\""
+            echo "$cmd_prefix | claude --dangerously-skip-permissions --model $model \"<PROMPT>\""
           else
-            echo "$cmd_prefix | claude \"<PROMPT>\""
+            echo "$cmd_prefix | claude --dangerously-skip-permissions \"<PROMPT>\""
           fi
         else
           if [ -n "$model" ]; then
-            echo "claude --model $model \"<PROMPT>\""
+            echo "claude --dangerously-skip-permissions --model $model \"<PROMPT>\""
           else
-            echo "claude \"<PROMPT>\""
+            echo "claude --dangerously-skip-permissions \"<PROMPT>\""
           fi
         fi
         ;;
@@ -165,13 +180,13 @@ run_ai() {
 
   case "$PROVIDER" in
     copilot)
-      copilot -p "$input"
+      copilot --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -p "$input"
       ;;
     claude)
       if [ -n "$model" ]; then
-        claude --model "$model" "$input"
+        claude --dangerously-skip-permissions --model "$model" "$input"
       else
-        claude "$input"
+        claude --dangerously-skip-permissions "$input"
       fi
       ;;
     *)
@@ -340,46 +355,44 @@ case "$COMMAND" in
 
   debug)
     require_files "$BASE" "$DEBUG"
-    run "Debug the issue. Identify the likely cause, reproduction path, smallest safe fix, and useful tests." \
+    run "1) Root cause analysis, 2) Minimal reproduction steps, 3) Smallest safe fix with code changes, 4) Regression tests to prevent recurrence, 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. $(html_task_instruction) $PATH_NOTE" \
       "$(debug_context)" \
       "" \
-      "git status; git log -8; git diff --name-only master...HEAD; node package.json" \
+      "git status; git log --oneline -5; git log master..HEAD --oneline; git diff --stat master...HEAD" \
       "$BASE" "$DEBUG"
     ;;
 
   feature)
-    require_files "$BASE" "$FEATURE"
-    run "Implement the requested feature. Reuse existing project patterns and identify the right files before coding." \
+    require_files "$BASE" "$PLANNING"
+    run "Implement the feature specified in $AI_PRIVATE_DIR/PLANNING.md. Follow project conventions in $REPO_ROOT/docs. Write clean, tested code matching existing patterns. Create or update unit tests. $PATH_NOTE" \
       "$(feature_context)" \
       "" \
-      "git status; git log -8; git diff --name-only master...HEAD; find . -maxdepth 3" \
-      "$BASE" "$FEATURE"
+      "$BASE" "$PLANNING"
     ;;
 
   refactor)
-    require_files "$BASE" "$REFACTOR"
-    run "Refactor safely. Preserve behavior, reduce complexity, avoid unnecessary changes, and suggest tests." \
+    require_files "$BASE" "$REVIEW"
+    run "Apply the refactoring described in $AI_PRIVATE_DIR/REVIEW.md. Preserve existing behavior while improving code quality. Follow project conventions in $REPO_ROOT/docs. Ensure all tests pass. $PATH_NOTE. Create a refactoring summary inside $AI_PRIVATE_DIR/REFACTOR.md (if exists, overwrite)." \
       "$(refactor_context)" \
       "" \
-      "git status; git log -8; git diff --cached --name-only; git diff --name-only" \
-      "$BASE" "$REFACTOR"
+      "$BASE" "$REVIEW"
     ;;
 
   review)
     require_files "$BASE" "$REVIEW"
-    run "Review only the current branch changes. Focus on bugs, regressions, missing tests, performance issues, and risky design changes." \
+    run "Review changed files against master. Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. $(html_task_instruction) $PATH_NOTE" \
       "$(review_context)" \
       "" \
-      "git status; git log -8; git diff --name-only master...HEAD" \
+      "git status; git log master..HEAD --oneline; git diff --name-only master...HEAD" \
       "$BASE" "$REVIEW"
     ;;
 
   planning)
     require_files "$BASE" "$PLANNING" "$FEATURE"
-    run "Create an implementation plan before coding. Do not modify files. Return architecture, affected files, risks, order of work, and test plan." \
+    run "Create an implementation plan for the feature in $AI_PRIVATE_DIR/FEATURE.md (if exists, overwrite). Do NOT modify source files. Output: 1) Architecture overview, 2) Files to create/modify, 3) Risks and mitigations, 4) Implementation order, 5) Test strategy. Write the plan to $AI_PRIVATE_DIR/PLANNING.md. $(html_task_instruction) $PATH_NOTE" \
       "$(planning_context)" \
       "opus" \
-      "git status; git log -8; git diff --name-only master...HEAD; find . -maxdepth 4" \
+      "git status; git log master..HEAD --oneline; git log master --oneline -5; find . -maxdepth 3 -type f \\( -name '*.ts' -o -name '*.tsx' -o -name '*.js' \\) | head -100" \
       "$BASE" "$PLANNING" "$FEATURE"
     ;;
 
