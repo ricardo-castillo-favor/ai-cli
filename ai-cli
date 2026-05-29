@@ -1,29 +1,84 @@
 #!/bin/bash
 
-source "$HOME/.ai.env"
+[ -f "$HOME/.ai.env" ] && source "$HOME/.ai.env" || echo "Warning: ~/.ai.env not found, continuing without it" >&2
 
 set -euo pipefail
 
 DRY_RUN=false
+MODEL_OVERRIDE=""
+
+# Translate model names between providers
+# Claude: opus, sonnet, haiku
+# Copilot: gpt-4o, gpt-4o-mini, gpt-3.5-turbo, claude-sonnet-4, etc.
+translate_model() {
+  local model="$1"
+  local provider="$2"
+  
+  if [ -z "$model" ]; then
+    echo ""
+    return
+  fi
+  
+  if [ "$provider" = "claude" ]; then
+    # Already Claude model names, pass through
+    echo "$model"
+  elif [ "$provider" = "copilot" ]; then
+    # For copilot, don't translate Claude model names - use copilot's default
+    # Only pass through explicit copilot model names
+    case "$model" in
+      opus|sonnet|haiku)  echo "" ;;  # Use copilot default
+      claude-*)
+        echo "Warning: Full Claude model ID '$model' may not be supported by Copilot. Using Copilot default." >&2
+        echo ""
+        ;;
+      *)  echo "$model" ;;  # Pass through explicit copilot models
+    esac
+  else
+    echo "$model"
+  fi
+}
 
 usage() {
   echo "Usage:"
   echo "  ai-cli claude \"free prompt\""
+  echo "  ai-cli claude commit \"your request\""
   echo "  ai-cli claude debug \"your request\""
+  echo "  ai-cli claude explain \"your request\""
   echo "  ai-cli claude feature \"your request\""
+  echo "  ai-cli claude fix \"your request\""
+  echo "  ai-cli claude lint \"your request\""
+  echo "  ai-cli claude pr \"your request\""
   echo "  ai-cli claude refactor \"your request\""
   echo "  ai-cli claude review \"your request\""
   echo "  ai-cli claude planning \"your request\""
+  echo "  ai-cli claude suggestions \"your request\""
+  echo "  ai-cli claude test \"your request\""
+  echo "  ai-cli claude types \"your request\""
   echo ""
   echo "  ai-cli copilot \"free prompt\""
+  echo "  ai-cli copilot commit \"your request\""
   echo "  ai-cli copilot debug \"your request\""
+  echo "  ai-cli copilot explain \"your request\""
   echo "  ai-cli copilot feature \"your request\""
+  echo "  ai-cli copilot fix \"your request\""
+  echo "  ai-cli copilot lint \"your request\""
+  echo "  ai-cli copilot pr \"your request\""
   echo "  ai-cli copilot refactor \"your request\""
   echo "  ai-cli copilot review \"your request\""
   echo "  ai-cli copilot planning \"your request\""
+  echo "  ai-cli copilot suggestions \"your request\""
+  echo "  ai-cli copilot test \"your request\""
+  echo "  ai-cli copilot types \"your request\""
   echo ""
   echo "Options:"
-  echo "  --dry-run, -d Show the generated prompt without executing"
+  echo "  --dry-run, -d    Show the generated prompt without executing"
+  echo "  --model, -m      Override the default model (e.g., --model haiku)"
+  echo ""
+  echo "Flags can appear before or after the provider:"
+  echo "  ai-cli --model haiku claude review \"...\""
+  echo "  ai-cli claude --model haiku review \"...\""
+  echo ""
+  echo "Default models per command: debug/planning/explain → opus, others → sonnet"
 }
 
 if [ "$#" -eq 0 ]; then
@@ -31,23 +86,40 @@ if [ "$#" -eq 0 ]; then
   exit 1
 fi
 
-# Parse --dry-run flag
-if [[ "${1:-}" == "--dry-run" || "${1:-}" == "-d" ]]; then
-  DRY_RUN=true
-  shift
-fi
+# Parse global flags (--dry-run, --model) — accepted before provider
+while true; do
+  case "${1:-}" in
+    --dry-run|-d)
+      DRY_RUN=true
+      shift
+      ;;
+    --model|-m)
+      shift
+      MODEL_OVERRIDE="${1:-}"
+      shift || true
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 PROVIDER="${1:-}"
-COMMAND="${2:-}"
 shift || true
 
-if [ "$#" -gt 0 ]; then
+# Also accept --model after provider for backward compatibility
+if [[ "${1:-}" == "--model" || "${1:-}" == "-m" ]]; then
+  shift
+  MODEL_OVERRIDE="${1:-}"
   shift || true
 fi
 
+COMMAND="${1:-}"
+shift || true
+
 PROMPT="$*"
 
-KNOWN_COMMANDS=("debug" "feature" "refactor" "review" "planning")
+KNOWN_COMMANDS=("commit" "debug" "explain" "feature" "fix" "lint" "pr" "refactor" "review" "planning" "suggestions" "test" "types")
 
 if [ -z "$COMMAND" ]; then
   usage
@@ -80,7 +152,6 @@ if [ ! -d "$AI_PRIVATE_DIR" ]; then
 fi
 
 BASE="$REPO_ROOT/CLAUDE.md"
-FEATURE="$AI_PRIVATE_DIR/FEATURE.md"
 DEBUG="$AI_PRIVATE_DIR/DEBUG.md"
 REFACTOR="$AI_PRIVATE_DIR/REFACTOR.md"
 REVIEW="$AI_PRIVATE_DIR/REVIEW.md"
@@ -102,7 +173,9 @@ existing_files() {
 
 # Reusable instruction for HTML task visualization
 html_task_instruction() {
-  echo "Based on the above, create a clean, interactive, professional HTML/CSS/JS self-contained 'plan.html' with modern styling (layout, colors, filters, charts). Save to $AI_PRIVATE_DIR/tasks/plan.html (create folder if needed)."
+  local ts
+  ts=$(date +%Y%m%d-%H%M%S)
+  echo "Based on the above, create a clean, interactive, professional HTML/CSS/JS self-contained '${COMMAND}-${ts}.html' with modern styling (layout, colors, filters, charts). Save to $AI_PRIVATE_DIR/tasks/${COMMAND}-${ts}.html (create folder if needed)."
 }
 
 # Note about paths (used in prompts) - uses absolute path
@@ -110,17 +183,29 @@ PATH_NOTE="IMPORTANT: All output files must be written to $AI_PRIVATE_DIR/ (abso
 
 run_ai() {
   local input="$1"
-  local model="${2:-}"
+  local default_model="${2:-}"
   local files_display="${3:-}"
   local prompt_no_static="${4:-$input}"
   local dynamic_cmds="${5:-}"
+
+  # Use override if set, otherwise use default
+  local internal_model="${MODEL_OVERRIDE:-$default_model}"
+  # Translate model for the provider
+  local resolved_model
+  resolved_model=$(translate_model "$internal_model" "$PROVIDER")
 
   echo "═══════════════════════════════════════════════════════════════"
   echo "Provider : $PROVIDER"
   echo "Command  : $COMMAND"
   echo "Branch   : $(git branch --show-current)"
-  if [ -n "$model" ]; then
-    echo "Model    : $model"
+  if [ -n "$internal_model" ]; then
+    if [ "$internal_model" != "$resolved_model" ]; then
+      echo "Model    : $internal_model → $resolved_model"
+    else
+      echo "Model    : $resolved_model"
+    fi
+  else
+    echo "Model    : (default)"
   fi
   echo "Dry-run  : $DRY_RUN"
   echo "═══════════════════════════════════════════════════════════════"
@@ -145,21 +230,29 @@ run_ai() {
     case "$PROVIDER" in
       copilot)
         if [ -n "$cmd_prefix" ]; then
-          echo "$cmd_prefix | copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+          if [ -n "$resolved_model" ]; then
+            echo "$cmd_prefix | copilot --model $resolved_model --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+          else
+            echo "$cmd_prefix | copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+          fi
         else
-          echo "copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+          if [ -n "$resolved_model" ]; then
+            echo "copilot --model $resolved_model --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+          else
+            echo "copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+          fi
         fi
         ;;
       claude)
         if [ -n "$cmd_prefix" ]; then
-          if [ -n "$model" ]; then
-            echo "$cmd_prefix | claude --dangerously-skip-permissions --model $model \"<PROMPT>\""
+          if [ -n "$resolved_model" ]; then
+            echo "$cmd_prefix | claude --dangerously-skip-permissions --model $resolved_model \"<PROMPT>\""
           else
             echo "$cmd_prefix | claude --dangerously-skip-permissions \"<PROMPT>\""
           fi
         else
-          if [ -n "$model" ]; then
-            echo "claude --dangerously-skip-permissions --model $model \"<PROMPT>\""
+          if [ -n "$resolved_model" ]; then
+            echo "claude --dangerously-skip-permissions --model $resolved_model \"<PROMPT>\""
           else
             echo "claude --dangerously-skip-permissions \"<PROMPT>\""
           fi
@@ -180,11 +273,15 @@ run_ai() {
 
   case "$PROVIDER" in
     copilot)
-      copilot --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -p "$input"
+      if [ -n "$resolved_model" ]; then
+        copilot --model "$resolved_model" --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -p "$input"
+      else
+        copilot --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -p "$input"
+      fi
       ;;
     claude)
-      if [ -n "$model" ]; then
-        claude --dangerously-skip-permissions --model "$model" "$input"
+      if [ -n "$resolved_model" ]; then
+        claude --dangerously-skip-permissions --model "$resolved_model" "$input"
       else
         claude --dangerously-skip-permissions "$input"
       fi
@@ -201,13 +298,13 @@ base_repo_context() {
   cat <<EOF
 
 ### BRANCH
-$(git branch --show-current)
+$(git branch --show-current 2>/dev/null || true)
 
 ### REPO STATUS
-$(git status --short)
+$(git status --short 2>/dev/null || true)
 
 ### RECENT COMMITS
-$(git log --oneline -8)
+$(git log --oneline -8 2>/dev/null || true)
 
 EOF
 }
@@ -273,6 +370,9 @@ $(base_repo_context)
 
 $(changed_files_context)
 
+### BRANCH DIFF STATS
+$(git diff --stat master...HEAD 2>/dev/null || true)
+
 ### PACKAGE SCRIPTS
 $(node -e "try { const p=require('./package.json'); console.log(JSON.stringify(p.scripts,null,2)) } catch(e) {}" 2>/dev/null || true)
 
@@ -286,13 +386,29 @@ $(base_repo_context)
 
 $(changed_files_context)
 
-### RELEVANT TREE
-$(find . -maxdepth 4 \
+### BRANCH COMMITS
+$(git log master..HEAD --oneline 2>/dev/null || true)
+
+### MASTER RECENT
+$(git log master --oneline -5 2>/dev/null || true)
+
+### SOURCE FILES
+$(find . -maxdepth 3 -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' \) \
   -not -path "./.git/*" \
   -not -path "./node_modules/*" \
   -not -path "./dist/*" \
   -not -path "./build/*" \
-  -type f | sed 's#^\./##' | head -300)
+  | sed 's#^\./##' | head -150)
+
+### FULL TREE
+$(find . -maxdepth 3 -type f \
+  -not -path "./.git/*" \
+  -not -path "*/node_modules/*" \
+  -not -path "*/dist/*" \
+  -not -path "*/.next/*" \
+  -not -path "*/coverage/*" \
+  -not -path "*/build/*" \
+  | sed 's#^\./##' | head -100)
 
 EOF
 }
@@ -310,6 +426,20 @@ run() {
   if [ -z "$files" ]; then
     echo "Error: No valid context files found"
     exit 1
+  fi
+
+  # Execute dynamic commands and capture output into context (live mode only)
+  if [ -n "$dynamic_cmds" ] && [ "$DRY_RUN" = false ]; then
+    local dynamic_cmd_output
+    dynamic_cmd_output=$(eval "$dynamic_cmds" 2>&1 || true)
+    if [ -n "$dynamic_cmd_output" ]; then
+      dynamic_context="$dynamic_context
+
+### COMMAND OUTPUT
+\`\`\`
+$dynamic_cmd_output
+\`\`\`"
+    fi
   fi
 
   # Get relative file paths for display
@@ -355,45 +485,128 @@ case "$COMMAND" in
 
   debug)
     require_files "$BASE" "$DEBUG"
-    run "1) Root cause analysis, 2) Minimal reproduction steps, 3) Smallest safe fix with code changes, 4) Regression tests to prevent recurrence, 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. $(html_task_instruction) $PATH_NOTE" \
+    run "1) Root cause analysis, 2) Minimal reproduction steps, 3) Smallest safe fix with code changes, 4) Regression tests to prevent recurrence, 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
       "$(debug_context)" \
+      "opus" \
       "" \
-      "git status; git log --oneline -5; git log master..HEAD --oneline; git diff --stat master...HEAD" \
       "$BASE" "$DEBUG"
     ;;
 
   feature)
-    require_files "$BASE" "$PLANNING"
-    run "Implement the feature specified in $AI_PRIVATE_DIR/PLANNING.md. Follow project conventions in $REPO_ROOT/docs. Write clean, tested code matching existing patterns. Create or update unit tests. $PATH_NOTE" \
+    if [ ! -f "$PLANNING" ]; then
+      echo "Error: $PLANNING not found."
+      echo "Create it with your feature description. Note: this command now uses PLANNING.md (previously FEATURE.md)."
+      exit 1
+    fi
+    require_files "$BASE"
+    run "1) Implement the feature specified in $AI_PRIVATE_DIR/PLANNING.md. 2) Follow project conventions in $REPO_ROOT/docs. 3) Write clean, tested code matching existing patterns. 4) Create or update unit tests. $PATH_NOTE" \
       "$(feature_context)" \
+      "" \
       "" \
       "$BASE" "$PLANNING"
     ;;
 
   refactor)
     require_files "$BASE" "$REVIEW"
-    run "Apply the refactoring described in $AI_PRIVATE_DIR/REVIEW.md. Preserve existing behavior while improving code quality. Follow project conventions in $REPO_ROOT/docs. Ensure all tests pass. $PATH_NOTE. Create a refactoring summary inside $AI_PRIVATE_DIR/REFACTOR.md (if exists, overwrite)." \
+    run "1) Apply the refactoring described in $AI_PRIVATE_DIR/REVIEW.md. 2) Preserve existing behavior while improving code quality. 3) Follow project conventions in $REPO_ROOT/docs. 4) Ensure all tests pass. 5) Create a refactoring summary inside $AI_PRIVATE_DIR/REFACTOR.md (if exists, overwrite). $PATH_NOTE" \
       "$(refactor_context)" \
+      "" \
       "" \
       "$BASE" "$REVIEW"
     ;;
 
   review)
     require_files "$BASE" "$REVIEW"
-    run "Review changed files against master. Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. $(html_task_instruction) $PATH_NOTE" \
+    run "1) Review changed files against master. 2) Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. 3) Follow project conventions in $REPO_ROOT/docs. 4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
       "$(review_context)" \
       "" \
-      "git status; git log master..HEAD --oneline; git diff --name-only master...HEAD" \
+      "" \
       "$BASE" "$REVIEW"
     ;;
 
   planning)
-    require_files "$BASE" "$PLANNING" "$FEATURE"
-    run "Create an implementation plan for the feature in $AI_PRIVATE_DIR/FEATURE.md (if exists, overwrite). Do NOT modify source files. Output: 1) Architecture overview, 2) Files to create/modify, 3) Risks and mitigations, 4) Implementation order, 5) Test strategy. Write the plan to $AI_PRIVATE_DIR/PLANNING.md. $(html_task_instruction) $PATH_NOTE" \
+    require_files "$BASE" "$PLANNING"
+    run "1) Create an implementation plan from the custom prompt. 2) Do NOT modify source files. 3) Output: a) Architecture overview, b) Files to create/modify, c) Risks and mitigations, d) Implementation order, e) Test strategy. 4) Write the plan to $AI_PRIVATE_DIR/PLANNING.md. 5) $(html_task_instruction) $PATH_NOTE" \
       "$(planning_context)" \
       "opus" \
-      "git status; git log master..HEAD --oneline; git log master --oneline -5; find . -maxdepth 3 -type f \\( -name '*.ts' -o -name '*.tsx' -o -name '*.js' \\) | head -100" \
-      "$BASE" "$PLANNING" "$FEATURE"
+      "" \
+      "$BASE" "$PLANNING"
+    ;;
+
+  fix)
+    require_files "$BASE" "$REVIEW"
+    run "1) Fix the bugs and improvements from $AI_PRIVATE_DIR/REVIEW.md. 2) Follow project conventions in $REPO_ROOT/docs. 3) Avoid modifying or refactoring code external to this branch changes against master." \
+      "$(review_context)" \
+      "sonnet" \
+      "" \
+      "$BASE" "$REVIEW"
+    ;;
+
+  suggestions)
+    require_files "$BASE"
+    pr_info=$(gh pr view --json number,url,title 2>/dev/null || echo "No open PR found")
+    run "1) Use github mcp to get the fix suggestions comments from this branch PR. 2) Create a fix plan based on the suggestions. 3) Write into $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite). 4) Ensure all tests pass. $PATH_NOTE" \
+      "$(review_context)
+
+### CURRENT PR
+$pr_info" \
+      "sonnet" \
+      "" \
+      "$BASE"
+    ;;
+
+  commit)
+    require_files "$BASE"
+    run "1) Generate a concise, semantic commit message for the staged changes. 2) Format: <type>(<scope>): <description>. 3) Types: feat, fix, refactor, docs, test, chore. 4) Return ONLY the commit message, nothing else." \
+      "$(git diff --cached)" \
+      "sonnet" \
+      "" \
+      "$BASE"
+    ;;
+
+  pr)
+    require_files "$BASE"
+    run "1) Generate a PR description for the changes in this branch against master. 2) Include: Summary, Changes made, Testing done. 3) Use markdown formatting." \
+      "$(review_context)" \
+      "sonnet" \
+      "" \
+      "$BASE"
+    ;;
+
+  test)
+    require_files "$BASE"
+    run "1) Analyze the test output. 2) Focus on the root cause, not just making tests pass. 3) Suggest fixes. $PATH_NOTE" \
+      "$(review_context)" \
+      "sonnet" \
+      "npm run test" \
+      "$BASE"
+    ;;
+
+  types)
+    require_files "$BASE"
+    run "1) Fix TypeScript errors in the changed files. 2) Do not use 'any' - use \$TSFixMe with a comment if truly unavoidable. 3) Follow project conventions." \
+      "$(review_context)" \
+      "sonnet" \
+      "" \
+      "$BASE"
+    ;;
+
+  lint)
+    require_files "$BASE"
+    run "1) Fix ESLint and Prettier issues in the changed files. 2) Follow project style conventions." \
+      "$(review_context)" \
+      "sonnet" \
+      "" \
+      "$BASE"
+    ;;
+
+  explain)
+    require_files "$BASE"
+    run "1) Explain the code, architecture, or pattern. 2) Be concise but thorough. 3) Include relevant file references." \
+      "$(feature_context)" \
+      "opus" \
+      "" \
+      "$BASE"
     ;;
 
   *)
