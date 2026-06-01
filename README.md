@@ -14,15 +14,15 @@ Think of it as a **context orchestrator** — it knows what information each typ
 
 ## Why Use AI-CLI?
 
-| Benefit                            | Description                                                                                   |
-| ---------------------------------- | --------------------------------------------------------------------------------------------- |
-| **Structured Workflows**           | 14 pre-built commands for common dev tasks across the full development lifecycle              |
-| **Automatic Context Injection**    | Automatically gathers git status, recent commits, changed files, and project structure        |
-| **Token Efficiency**               | Sends only relevant context per task type, avoiding unnecessary token consumption             |
-| **Provider Agnostic**              | Switch between Claude and Copilot with a single word                                          |
-| **Persistent Documentation**       | Generates structured markdown files and interactive HTML task plans in `.ai-private/`         |
-| **Dry-Run Mode**                   | Preview the exact prompt and command before execution                                         |
-| **Model Override**                 | Override the default model per-run with `--model`                                             |
+| Benefit                         | Description                                                                            |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| **Structured Workflows**        | 15 pre-built commands for common dev tasks across the full development lifecycle       |
+| **Automatic Context Injection** | Automatically gathers git status, recent commits, changed files, and project structure |
+| **Token Efficiency**            | Sends only relevant context per task type, avoiding unnecessary token consumption      |
+| **Provider Agnostic**           | Switch between Claude and Copilot with a single word                                   |
+| **Persistent Documentation**    | Generates structured markdown files and interactive HTML task plans in `.ai-private/`  |
+| **Dry-Run Mode**                | Preview the exact prompt and command before execution                                  |
+| **Model Override**              | Override the default model per-run with `--model`                                      |
 
 ---
 
@@ -89,16 +89,14 @@ echo ".ai-private/" >> .gitignore
 
 **File purposes:**
 
-| File                      | Purpose                                                    |
-| ------------------------- | ---------------------------------------------------------- |
-| `CLAUDE.md`               | Project-wide instructions, conventions, and context for AI |
-| `.ai-private/PLANNING.md` | Feature specs and implementation plans (read by `feature`, written by `planning`) |
-| `.ai-private/DEBUG.md`    | Bug descriptions and reproduction steps (read by `debug`)  |
+| File                      | Purpose                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `CLAUDE.md`               | Project-wide instructions, conventions, and context for AI                                                 |
+| `.ai-private/PLANNING.md` | Feature specs and implementation plans (read by `feature`, written by `planning`)                          |
+| `.ai-private/DEBUG.md`    | Bug descriptions and reproduction steps (read by `debug`)                                                  |
 | `.ai-private/REVIEW.md`   | Review output and fix suggestions (written by `review`, `debug`, `suggestions`; read by `fix`, `refactor`) |
-| `.ai-private/REFACTOR.md` | Refactoring summaries (written by `refactor`)              |
-| `.ai-private/tasks/`      | Interactive HTML plans (written by `debug`, `review`, `planning`) |
-
-> **Migration note:** `.ai-private/FEATURE.md` is no longer used. The `feature` command now reads from `.ai-private/PLANNING.md`. If you have an existing `FEATURE.md`, move its contents to `PLANNING.md`.
+| `.ai-private/REFACTOR.md` | Refactoring summaries (written by `refactor`)                                                              |
+| `.ai-private/tasks/`      | Interactive HTML plans (written by `debug`, `review`, `planning`)                                          |
 
 ---
 
@@ -114,10 +112,10 @@ ai-cli [flags] <provider> [flags] <command> "your request"
 
 ### Flags
 
-| Flag | Short | Description |
-| ---- | ----- | ----------- |
-| `--dry-run` | `-d` | Show the generated prompt and provider command without executing |
-| `--model <name>` | `-m <name>` | Override the default model for this run |
+| Flag             | Short       | Description                                                      |
+| ---------------- | ----------- | ---------------------------------------------------------------- |
+| `--dry-run`      | `-d`        | Show the generated prompt and provider command without executing |
+| `--model <name>` | `-m <name>` | Override the default model for this run                          |
 
 Flags can appear **before or after** the provider:
 
@@ -217,7 +215,7 @@ ai-cli claude fix "apply the security and performance suggestions"
 
 ### `lint` — Fix linting issues
 
-Fixes ESLint and Prettier issues in the changed files.
+Analyzes lint output via `npm run check` and fixes issues in the changed files.
 
 ```bash
 ai-cli claude lint "fix all lint errors in the changed files"
@@ -258,6 +256,22 @@ ai-cli claude pr "highlight the security improvements"
 - **Model:** sonnet
 - **Reads:** `CLAUDE.md`
 - **Output:** PR description printed to terminal
+
+---
+
+### `playwright` — Analyze Playwright test failures
+
+Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch.
+
+```bash
+ai-cli claude playwright "investigate the failing checkout e2e"
+```
+
+- **Context:** branch, status, commits, changed files, Playwright config, changed test files
+- **Model:** sonnet
+- **Reads:** `CLAUDE.md`
+- **Output:** `.ai-private/REVIEW.md`
+- **Does NOT modify source files**
 
 ---
 
@@ -352,21 +366,22 @@ ai-cli copilot "generate unit tests for the UserService class"
 
 ## Model Reference
 
-| Command | Default Model | Notes |
-| ------- | ------------- | ----- |
-| `debug` | opus | Most expensive; override with `--model sonnet` if cost is a concern |
-| `planning` | opus | Complex reasoning task |
-| `explain` | opus | Best for architectural explanations |
-| `commit` | sonnet | |
-| `feature` | sonnet | |
-| `fix` | sonnet | |
-| `lint` | sonnet | |
-| `pr` | sonnet | |
-| `refactor` | sonnet | |
-| `review` | sonnet | |
-| `suggestions` | sonnet | |
-| `test` | sonnet | |
-| `types` | sonnet | |
+| Command       | Default Model | Notes                                                               |
+| ------------- | ------------- | ------------------------------------------------------------------- |
+| `debug`       | opus          | Most expensive; override with `--model sonnet` if cost is a concern |
+| `planning`    | opus          | Complex reasoning task                                              |
+| `explain`     | opus          | Best for architectural explanations                                 |
+| `commit`      | sonnet        |                                                                     |
+| `feature`     | sonnet        |                                                                     |
+| `fix`         | sonnet        |                                                                     |
+| `lint`        | sonnet        | Uses `npm run check` to analyze lint issues in changed files        |
+| `playwright`  | sonnet        | Analyzes Playwright E2E failures and suggests fixes                 |
+| `pr`          | sonnet        |                                                                     |
+| `refactor`    | sonnet        |                                                                     |
+| `review`      | sonnet        |                                                                     |
+| `suggestions` | sonnet        |                                                                     |
+| `test`        | sonnet        |                                                                     |
+| `types`       | sonnet        |                                                                     |
 
 **Claude model aliases:** `opus`, `sonnet`, `haiku`
 
@@ -418,14 +433,14 @@ ai-cli claude review "check for security issues"
 
 ### Context Functions
 
-| Function | Used by | What it includes |
-| -------- | ------- | ---------------- |
-| `base_repo_context()` | all | Branch name, `git status`, last 8 commits |
-| `review_context()` | commit, fix, lint, pr, refactor, review, suggestions, test, types | `base_repo_context` + changed files vs master |
-| `feature_context()` | explain, feature | `review_context` + file tree (depth 3, max 200) |
-| `refactor_context()` | refactor | `base_repo_context` + staged, unstaged, and changed files |
-| `debug_context()` | debug | `review_context` + diff stats + `package.json` scripts |
-| `planning_context()` | planning | `review_context` + branch commits + source files + full tree (depth 3, max 100) |
+| Function              | Used by                                                           | What it includes                                                                |
+| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `base_repo_context()` | all                                                               | Branch name, `git status`, last 8 commits                                       |
+| `review_context()`    | commit, fix, lint, pr, refactor, review, suggestions, test, types | `base_repo_context` + changed files vs master                                   |
+| `feature_context()`   | explain, feature                                                  | `review_context` + file tree (depth 3, max 200)                                 |
+| `refactor_context()`  | refactor                                                          | `base_repo_context` + staged, unstaged, and changed files                       |
+| `debug_context()`     | debug                                                             | `review_context` + diff stats + `package.json` scripts                          |
+| `planning_context()`  | planning                                                          | `review_context` + branch commits + source files + full tree (depth 3, max 100) |
 
 ---
 
@@ -439,6 +454,7 @@ ai-cli -d claude planning "add WebSocket support"
 ```
 
 The dry-run output shows:
+
 - Provider, command, branch, model, dry-run flag
 - The exact CLI command that would be run
 - The full prompt (without static context to keep it readable)
@@ -450,15 +466,15 @@ The dry-run output shows:
 
 Each command gathers only the context relevant to its task:
 
-| Command | Why scoped this way |
-| ------- | ------------------- |
-| `commit` | Only needs the staged diff |
-| `review`, `fix`, `lint`, `types` | Only needs changed files list |
-| `debug` | Adds diff stats and package scripts for runtime context |
-| `feature`, `explain` | Adds a file tree so the AI knows where to write/look |
-| `planning` | Broadest context — needs the full project picture |
-| `refactor` | Needs staged vs unstaged distinction |
-| `test` | Runs tests live and injects the real output |
+| Command                          | Why scoped this way                                     |
+| -------------------------------- | ------------------------------------------------------- |
+| `commit`                         | Only needs the staged diff                              |
+| `review`, `fix`, `lint`, `types` | Only needs changed files list                           |
+| `debug`                          | Adds diff stats and package scripts for runtime context |
+| `feature`, `explain`             | Adds a file tree so the AI knows where to write/look    |
+| `planning`                       | Broadest context — needs the full project picture       |
+| `refactor`                       | Needs staged vs unstaged distinction                    |
+| `test`                           | Runs tests live and injects the real output             |
 
 File trees are capped at 100–200 entries and limited to depth 3 to prevent context overflow.
 

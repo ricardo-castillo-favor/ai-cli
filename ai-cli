@@ -47,6 +47,7 @@ usage() {
   echo "  ai-cli claude feature \"your request\""
   echo "  ai-cli claude fix \"your request\""
   echo "  ai-cli claude lint \"your request\""
+  echo "  ai-cli claude playwright \"your request\""
   echo "  ai-cli claude pr \"your request\""
   echo "  ai-cli claude refactor \"your request\""
   echo "  ai-cli claude review \"your request\""
@@ -62,6 +63,7 @@ usage() {
   echo "  ai-cli copilot feature \"your request\""
   echo "  ai-cli copilot fix \"your request\""
   echo "  ai-cli copilot lint \"your request\""
+  echo "  ai-cli copilot playwright \"your request\""
   echo "  ai-cli copilot pr \"your request\""
   echo "  ai-cli copilot refactor \"your request\""
   echo "  ai-cli copilot review \"your request\""
@@ -119,7 +121,7 @@ shift || true
 
 PROMPT="$*"
 
-KNOWN_COMMANDS=("commit" "debug" "explain" "feature" "fix" "lint" "pr" "refactor" "review" "planning" "suggestions" "test" "types")
+KNOWN_COMMANDS=("commit" "debug" "explain" "feature" "fix" "lint" "playwright" "pr" "refactor" "review" "planning" "suggestions" "test" "types")
 
 if [ -z "$COMMAND" ]; then
   usage
@@ -413,6 +415,25 @@ $(find . -maxdepth 3 -type f \
 EOF
 }
 
+playwright_context() {
+  cat <<EOF
+
+$(base_repo_context)
+
+$(changed_files_context)
+
+### CHANGED TEST FILES
+$(git diff --name-only master...HEAD 2>/dev/null | grep -E '\.(spec|test)\.(ts|js)$' || echo "No test files changed")
+
+### PLAYWRIGHT CONFIG
+$(cat playwright.config.ts 2>/dev/null | head -50 || echo "No playwright.config.ts found")
+
+### PLAYWRIGHT TEST FILES
+$(find . -path "*/playwright/*" -name "*.ts" -type f 2>/dev/null | head -30 || echo "No playwright tests found")
+
+EOF
+}
+
 run() {
   local instruction="$1"
   local dynamic_context="$2"
@@ -593,10 +614,19 @@ $pr_info" \
 
   lint)
     require_files "$BASE"
-    run "1) Fix ESLint and Prettier issues in the changed files. 2) Follow project style conventions." \
+    run "1) Analyze the lint output and fix ESLint and Prettier issues in the changed files. 2) Follow project style conventions." \
       "$(review_context)" \
       "sonnet" \
-      "" \
+      "npm run check 2>&1 || true" \
+      "$BASE"
+    ;;
+
+  playwright)
+    require_files "$BASE"
+    run "1) Analyze the Playwright E2E test output to identify failures introduced by this branch. 2) Compare changed files against master to determine if failures are related to branch changes. 3) For each failure: identify root cause, affected component, and suggest a fix. 4) If mocks are stale or API responses changed, note which HAR files need updating. 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md with actionable fixes grouped by severity. $PATH_NOTE" \
+      "$(playwright_context)" \
+      "sonnet" \
+      "npm run playwright 2>&1 || true" \
       "$BASE"
     ;;
 
