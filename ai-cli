@@ -1,11 +1,10 @@
 #!/bin/bash
 
-[ -f "$HOME/.ai.env" ] && source "$HOME/.ai.env" || echo "Warning: ~/.ai.env not found, continuing without it" >&2
-
 set -euo pipefail
 
 DRY_RUN=false
 MODEL_OVERRIDE=""
+PLANNING_HTML=false
 
 # Translate model names between providers
 # Claude: opus, sonnet, haiku
@@ -73,8 +72,9 @@ usage() {
   echo "  ai-cli copilot types \"your request\""
   echo ""
   echo "Options:"
-  echo "  --dry-run, -d    Show the generated prompt without executing"
-  echo "  --model, -m      Override the default model (e.g., --model haiku)"
+  echo "  --dry-run, -d        Show the generated prompt without executing"
+  echo "  --model, -m          Override the default model (e.g., --model haiku)"
+  echo "  --planning, -p       Generate planning HTML visualization (default: true)"
   echo ""
   echo "Flags can appear before or after the provider:"
   echo "  ai-cli --model haiku claude review \"...\""
@@ -88,7 +88,7 @@ if [ "$#" -eq 0 ]; then
   exit 1
 fi
 
-# Parse global flags (--dry-run, --model) — accepted before provider
+# Parse global flags (--dry-run, --model, --planning) — accepted before provider
 while true; do
   case "${1:-}" in
     --dry-run|-d)
@@ -100,6 +100,11 @@ while true; do
       MODEL_OVERRIDE="${1:-}"
       shift || true
       ;;
+    --planning|-p)
+      shift
+      PLANNING_HTML="${1:-true}"
+      shift || true
+      ;;
     *)
       break
       ;;
@@ -109,12 +114,28 @@ done
 PROVIDER="${1:-}"
 shift || true
 
-# Also accept --model after provider for backward compatibility
-if [[ "${1:-}" == "--model" || "${1:-}" == "-m" ]]; then
-  shift
-  MODEL_OVERRIDE="${1:-}"
-  shift || true
-fi
+# Also accept flags after provider for backward compatibility
+while true; do
+  case "${1:-}" in
+    --dry-run|-d)
+      DRY_RUN=true
+      shift
+      ;;
+    --model|-m)
+      shift
+      MODEL_OVERRIDE="${1:-}"
+      shift || true
+      ;;
+    --planning|-p)
+      shift
+      PLANNING_HTML="${1:-false}"
+      shift || true
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 COMMAND="${1:-}"
 shift || true
@@ -175,6 +196,10 @@ existing_files() {
 
 # Reusable instruction for HTML task visualization
 html_task_instruction() {
+  if [ "$PLANNING_HTML" != "true" ]; then
+    echo ""
+    return
+  fi
   local ts
   ts=$(date +%Y%m%d-%H%M%S)
   echo "Based on the above, create a clean, interactive, professional HTML/CSS/JS self-contained '${COMMAND}-${ts}.html' with modern styling (layout, colors, filters, charts). Save to $AI_PRIVATE_DIR/tasks/${COMMAND}-${ts}.html (create folder if needed)."
@@ -210,6 +235,7 @@ run_ai() {
     echo "Model    : (default)"
   fi
   echo "Dry-run  : $DRY_RUN"
+  echo "Planning : $PLANNING_HTML"
   echo "═══════════════════════════════════════════════════════════════"
 
   if [ "$DRY_RUN" = true ]; then
@@ -276,9 +302,9 @@ run_ai() {
   case "$PROVIDER" in
     copilot)
       if [ -n "$resolved_model" ]; then
-        copilot --model "$resolved_model" --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -p "$input"
+        copilot --model "$resolved_model" --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -i "$input"
       else
-        copilot --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -p "$input"
+        copilot --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -i "$input"
       fi
       ;;
     claude)
@@ -538,7 +564,7 @@ case "$COMMAND" in
 
   review)
     require_files "$BASE" "$REVIEW"
-    run "1) Review changed files against master. 2) Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. 3) Follow project conventions in $REPO_ROOT/docs. 4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
+    run "1) Review changed files against master. 2) Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. 3) Follow project conventions in $REPO_ROOT/docs and keep in mind $AI_PRIVATE_DIR/LEARNED.md doc about old reviews.  4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
       "$(review_context)" \
       "" \
       "" \
