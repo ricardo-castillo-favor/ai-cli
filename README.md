@@ -23,7 +23,7 @@ Think of it as a **context orchestrator** — it knows what information each typ
 | **Persistent Documentation**    | Generates structured markdown files and interactive HTML task plans in `.ai-private/`  |
 | **Dry-Run Mode**                | Preview the exact prompt and command before execution                                  |
 | **Model Override**              | Override the default model per-run with `--model`                                      |
-| **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                      |
+| **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                     |
 
 ---
 
@@ -94,15 +94,15 @@ echo ".ai-private/" >> .gitignore
 
 **File purposes:**
 
-| File                         | Purpose                                                                                                    |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `CLAUDE.md`                  | Project-wide instructions, conventions, and context for AI                                                 |
-| `.ai-private/PLANNING.md`    | Feature specs and implementation plans (read by `feature`, written by `planning`)                          |
-| `.ai-private/DEBUG.md`       | Bug descriptions and reproduction steps (read by `debug`)                                                  |
+| File                         | Purpose                                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE.md`                  | Project-wide instructions, conventions, and context for AI                                                          |
+| `.ai-private/PLANNING.md`    | Feature specs and implementation plans (read by `feature`, written by `planning`)                                   |
+| `.ai-private/DEBUG.md`       | Bug descriptions and reproduction steps (read by `debug`)                                                           |
 | `.ai-private/REVIEW.md`      | Review output and fix suggestions (written by `review`, `debug`, `audit`, `suggestions`; read by `fix`, `refactor`) |
-| `.ai-private/REFACTOR.md`    | Refactoring summaries (written by `refactor`)                                                              |
-| `.ai-private/BUG-HUNTING.md` | Bug-hunting criteria/checklist for the branch's changes (read by `audit`)                                  |
-| `.ai-private/tasks/`         | Interactive HTML plans (written by `debug`, `review`, `planning` when `--planning` is enabled)              |
+| `.ai-private/REFACTOR.md`    | Refactoring summaries (written by `refactor`)                                                                       |
+| `.ai-private/BUG-HUNTING.md` | Bug-hunting criteria/checklist for the branch's changes (read by `audit`)                                           |
+| `.ai-private/tasks/`         | Interactive HTML plans (written by `debug`, `review`, `planning` when `--planning` is enabled)                      |
 
 ---
 
@@ -118,11 +118,11 @@ ai-cli [flags] <provider> [flags] <command> "your request"
 
 ### Flags
 
-| Flag                | Short          | Description                                                                    |
-| ------------------- | -------------- | ------------------------------------------------------------------------------- |
-| `--dry-run`         | `-d`           | Show the generated prompt and provider command without executing               |
-| `--model <name>`    | `-m <name>`    | Override the default model for this run                                        |
-| `--planning [bool]` | `-p [bool]`    | Enable the interactive HTML task visualization for commands that support it (off by default) |
+| Flag                | Short       | Description                                                                                  |
+| ------------------- | ----------- | -------------------------------------------------------------------------------------------- |
+| `--dry-run`         | `-d`        | Show the generated prompt and provider command without executing                             |
+| `--model <name>`    | `-m <name>` | Override the default model for this run                                                      |
+| `--planning [bool]` | `-p [bool]` | Enable the interactive HTML task visualization for commands that support it (off by default) |
 
 Flags can appear **before or after** the provider:
 
@@ -498,16 +498,16 @@ The dry-run output shows:
 
 Each command gathers only the context relevant to its task:
 
-| Command                          | Why scoped this way                                     |
-| -------------------------------- | ------------------------------------------------------- |
-| `commit`                         | Only needs the staged diff                              |
-| `review`, `fix`, `lint`, `types` | Only needs changed files list                           |
+| Command                          | Why scoped this way                                                     |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| `commit`                         | Only needs the staged diff                                              |
+| `review`, `fix`, `lint`, `types` | Only needs changed files list                                           |
 | `audit`                          | Needs staged vs unstaged distinction plus the `BUG-HUNTING.md` criteria |
-| `debug`                          | Adds diff stats and package scripts for runtime context |
-| `feature`, `explain`             | Adds a file tree so the AI knows where to write/look    |
-| `planning`                       | Broadest context — needs the full project picture       |
-| `refactor`                       | Needs staged vs unstaged distinction                    |
-| `test`                           | Runs tests live and injects the real output             |
+| `debug`                          | Adds diff stats and package scripts for runtime context                 |
+| `feature`, `explain`             | Adds a file tree so the AI knows where to write/look                    |
+| `planning`                       | Broadest context — needs the full project picture                       |
+| `refactor`                       | Needs staged vs unstaged distinction                                    |
+| `test`                           | Runs tests live and injects the real output                             |
 
 File trees are capped at 100–200 entries and limited to depth 3 to prevent context overflow.
 
@@ -547,3 +547,5 @@ MIT License — Feel free to use, modify, and distribute.
 ---
 
 **Made for developers who want AI to work smarter, not harder.**
+
+If you ask for better question, will get a better answer - [Ricardo Castillo (dilettant poet)] (https://www.ricardocastillo.com)
