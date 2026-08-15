@@ -1,12 +1,12 @@
 # AI-CLI — AI-Powered Development Workflow
 
-> A command-line orchestrator that supercharges Claude Code and GitHub Copilot CLI with structured workflows for debugging, code reviews, feature planning, refactoring, and more.
+> A command-line orchestrator that supercharges Claude Code, GitHub Copilot CLI, and Cursor Agent CLI with structured workflows for debugging, code reviews, feature planning, refactoring, and more.
 
 ---
 
 ## What is AI-CLI?
 
-AI-CLI is a bash script that acts as an intelligent middleware between you and AI coding assistants (Claude Code CLI and GitHub Copilot CLI). Instead of manually crafting prompts and gathering context every time, AI-CLI automatically collects relevant repository information, combines it with your project's documentation, and sends structured, context-rich prompts to your preferred AI provider.
+AI-CLI is a bash script that acts as an intelligent middleware between you and AI coding assistants (Claude Code CLI, GitHub Copilot CLI, and Cursor Agent CLI). Instead of manually crafting prompts and gathering context every time, AI-CLI automatically collects relevant repository information, combines it with your project's documentation, and sends structured, context-rich prompts to your preferred AI provider.
 
 Think of it as a **context orchestrator** — it knows what information each type of task needs and assembles the perfect prompt automatically.
 
@@ -19,10 +19,11 @@ Think of it as a **context orchestrator** — it knows what information each typ
 | **Structured Workflows**        | 15 pre-built commands for common dev tasks across the full development lifecycle       |
 | **Automatic Context Injection** | Automatically gathers git status, recent commits, changed files, and project structure |
 | **Token Efficiency**            | Sends only relevant context per task type, avoiding unnecessary token consumption      |
-| **Provider Agnostic**           | Switch between Claude and Copilot with a single word                                   |
+| **Provider Agnostic**           | Switch between Claude, Copilot, and Cursor with a single word                          |
 | **Persistent Documentation**    | Generates structured markdown files and interactive HTML task plans in `.ai-private/`  |
 | **Dry-Run Mode**                | Preview the exact prompt and command before execution                                  |
 | **Model Override**              | Override the default model per-run with `--model`                                      |
+| **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                      |
 
 ---
 
@@ -39,7 +40,15 @@ Think of it as a **context orchestrator** — it knows what information each typ
    ```bash
    gh extension install github/gh-copilot
    ```
-4. **gh CLI** (optional, required for the `suggestions` command)
+4. **Cursor Agent CLI** (optional, if using the `cursor` provider)
+   ```bash
+   curl https://cursor.com/install -fsS | bash
+   ```
+5. **jq** (required for the `cursor` provider — used to parse its streamed JSON output)
+   ```bash
+   brew install jq
+   ```
+6. **gh CLI** (optional, required for the `suggestions` command)
    ```bash
    brew install gh
    ```
@@ -60,14 +69,9 @@ export PATH="$HOME/bin:$PATH"
 source ~/.zshrc
 ```
 
-### Environment File
+### Environment Variables
 
-AI-CLI optionally sources `~/.ai.env` at startup. If the file is absent, a warning is printed and execution continues.
-
-```bash
-touch ~/.ai.env
-# Add any API keys or environment variables your providers need
-```
+AI-CLI does not source any env file itself — each provider CLI (`claude`, `copilot`, `cursor-agent`) must already be authenticated and have any API keys it needs available in your shell environment before you run `ai-cli`. Export them in your `~/.zshrc`/`~/.bashrc` (or run each provider's own login command) as usual.
 
 ### Repository Setup
 
@@ -79,24 +83,26 @@ touch CLAUDE.md
 
 # Optional: private context files (add .ai-private/ to .gitignore)
 mkdir -p .ai-private
-touch .ai-private/PLANNING.md   # feature specs and implementation plans
-touch .ai-private/DEBUG.md      # bug descriptions and reproduction steps
-touch .ai-private/REVIEW.md     # review output and fix suggestions
-touch .ai-private/REFACTOR.md   # refactoring summaries
+touch .ai-private/PLANNING.md     # feature specs and implementation plans
+touch .ai-private/DEBUG.md        # bug descriptions and reproduction steps
+touch .ai-private/REVIEW.md       # review output and fix suggestions
+touch .ai-private/REFACTOR.md     # refactoring summaries
+touch .ai-private/BUG-HUNTING.md  # criteria/checklist used by the audit command
 
 echo ".ai-private/" >> .gitignore
 ```
 
 **File purposes:**
 
-| File                      | Purpose                                                                                                    |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `CLAUDE.md`               | Project-wide instructions, conventions, and context for AI                                                 |
-| `.ai-private/PLANNING.md` | Feature specs and implementation plans (read by `feature`, written by `planning`)                          |
-| `.ai-private/DEBUG.md`    | Bug descriptions and reproduction steps (read by `debug`)                                                  |
-| `.ai-private/REVIEW.md`   | Review output and fix suggestions (written by `review`, `debug`, `suggestions`; read by `fix`, `refactor`) |
-| `.ai-private/REFACTOR.md` | Refactoring summaries (written by `refactor`)                                                              |
-| `.ai-private/tasks/`      | Interactive HTML plans (written by `debug`, `review`, `planning`)                                          |
+| File                         | Purpose                                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `CLAUDE.md`                  | Project-wide instructions, conventions, and context for AI                                                 |
+| `.ai-private/PLANNING.md`    | Feature specs and implementation plans (read by `feature`, written by `planning`)                          |
+| `.ai-private/DEBUG.md`       | Bug descriptions and reproduction steps (read by `debug`)                                                  |
+| `.ai-private/REVIEW.md`      | Review output and fix suggestions (written by `review`, `debug`, `audit`, `suggestions`; read by `fix`, `refactor`) |
+| `.ai-private/REFACTOR.md`    | Refactoring summaries (written by `refactor`)                                                              |
+| `.ai-private/BUG-HUNTING.md` | Bug-hunting criteria/checklist for the branch's changes (read by `audit`)                                  |
+| `.ai-private/tasks/`         | Interactive HTML plans (written by `debug`, `review`, `planning` when `--planning` is enabled)              |
 
 ---
 
@@ -108,14 +114,15 @@ echo ".ai-private/" >> .gitignore
 ai-cli [flags] <provider> [flags] <command> "your request"
 ```
 
-**Providers:** `claude` | `copilot`
+**Providers:** `claude` | `copilot` | `cursor`
 
 ### Flags
 
-| Flag             | Short       | Description                                                      |
-| ---------------- | ----------- | ---------------------------------------------------------------- |
-| `--dry-run`      | `-d`        | Show the generated prompt and provider command without executing |
-| `--model <name>` | `-m <name>` | Override the default model for this run                          |
+| Flag                | Short          | Description                                                                    |
+| ------------------- | -------------- | ------------------------------------------------------------------------------- |
+| `--dry-run`         | `-d`           | Show the generated prompt and provider command without executing               |
+| `--model <name>`    | `-m <name>`    | Override the default model for this run                                        |
+| `--planning [bool]` | `-p [bool]`    | Enable the interactive HTML task visualization for commands that support it (off by default) |
 
 Flags can appear **before or after** the provider:
 
@@ -125,11 +132,30 @@ ai-cli claude --dry-run review "..."
 
 ai-cli --model haiku claude lint "..."
 ai-cli claude --model haiku lint "..."
+
+ai-cli --planning claude planning "design a caching layer"
+ai-cli claude planning --planning "design a caching layer"
 ```
 
 ---
 
 ## Commands
+
+### `audit` — Bug-hunt the branch's changes
+
+Reviews the current source-control changes (staged, unstaged, and against master) against the criteria in `BUG-HUNTING.md`, looking specifically for bugs, inefficiencies, and unclear code introduced by this branch. Writes findings to `REVIEW.md`.
+
+```bash
+ai-cli claude audit "focus on the payment retry logic"
+```
+
+- **Context:** branch, status, commits, staged files, unstaged files, changed files vs master
+- **Model:** sonnet
+- **Reads:** `.ai-private/BUG-HUNTING.md`
+- **Output:** `.ai-private/REVIEW.md` (overwritten), findings grouped by severity
+- **Avoids modifying or refactoring code outside this branch's changes**
+
+---
 
 ### `commit` — Generate a commit message
 
@@ -360,6 +386,7 @@ Any unrecognized command is treated as a free-form prompt — direct AI interact
 ```bash
 ai-cli claude "explain how the authentication middleware works"
 ai-cli copilot "generate unit tests for the UserService class"
+ai-cli cursor "summarize the open TODOs in this file"
 ```
 
 ---
@@ -371,6 +398,7 @@ ai-cli copilot "generate unit tests for the UserService class"
 | `debug`       | opus          | Most expensive; override with `--model sonnet` if cost is a concern |
 | `planning`    | opus          | Complex reasoning task                                              |
 | `explain`     | opus          | Best for architectural explanations                                 |
+| `audit`       | sonnet        | Bug-hunts the branch's changes against `BUG-HUNTING.md`             |
 | `commit`      | sonnet        |                                                                     |
 | `feature`     | sonnet        |                                                                     |
 | `fix`         | sonnet        |                                                                     |
@@ -387,6 +415,8 @@ ai-cli copilot "generate unit tests for the UserService class"
 
 **Copilot models:** `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo`, `claude-sonnet-4`, etc. Claude aliases (`opus`, `sonnet`, `haiku`) are silently mapped to the Copilot default. Full Claude model IDs (e.g. `claude-3-5-sonnet-20241022`) will produce a warning and fall back to the Copilot default.
 
+**Cursor models:** explicit Cursor Agent model names (e.g. `gpt-5`, `sonnet-4-thinking`). Claude aliases (`opus`, `sonnet`, `haiku`) are silently mapped to the Cursor default. Full Claude model IDs (e.g. `claude-3-5-sonnet-20241022`) will produce a warning and fall back to the Cursor default.
+
 ---
 
 ## How It Works
@@ -395,7 +425,7 @@ ai-cli copilot "generate unit tests for the UserService class"
 ai-cli claude review "check for security issues"
          │
          ▼
-1. Parse flags (--dry-run, --model) and provider
+1. Parse flags (--dry-run, --model, --planning) and provider
 2. Validate: inside a git repo, CLAUDE.md exists
 3. Auto-create .ai-private/ if missing
          │
@@ -422,7 +452,9 @@ ai-cli claude review "check for security issues"
          ▼
 7. Execute AI provider
    • claude --dangerously-skip-permissions [--model X] "<prompt>"
-   • copilot --allow-all-tools --allow-all-paths --add-dir $REPO_ROOT -p "<prompt>"
+   • copilot --allow-all-tools --allow-all-paths --add-dir $REPO_ROOT -i "<prompt>"
+   • cursor-agent --print --force --trust --output-format stream-json \
+       --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'
          │
          ▼
 8. Output
@@ -438,7 +470,7 @@ ai-cli claude review "check for security issues"
 | `base_repo_context()` | all                                                               | Branch name, `git status`, last 8 commits                                       |
 | `review_context()`    | commit, fix, lint, pr, refactor, review, suggestions, test, types | `base_repo_context` + changed files vs master                                   |
 | `feature_context()`   | explain, feature                                                  | `review_context` + file tree (depth 3, max 200)                                 |
-| `refactor_context()`  | refactor                                                          | `base_repo_context` + staged, unstaged, and changed files                       |
+| `refactor_context()`  | audit, refactor                                                   | `base_repo_context` + staged, unstaged, and changed files                       |
 | `debug_context()`     | debug                                                             | `review_context` + diff stats + `package.json` scripts                          |
 | `planning_context()`  | planning                                                          | `review_context` + branch commits + source files + full tree (depth 3, max 100) |
 
@@ -470,6 +502,7 @@ Each command gathers only the context relevant to its task:
 | -------------------------------- | ------------------------------------------------------- |
 | `commit`                         | Only needs the staged diff                              |
 | `review`, `fix`, `lint`, `types` | Only needs changed files list                           |
+| `audit`                          | Needs staged vs unstaged distinction plus the `BUG-HUNTING.md` criteria |
 | `debug`                          | Adds diff stats and package scripts for runtime context |
 | `feature`, `explain`             | Adds a file tree so the AI knows where to write/look    |
 | `planning`                       | Broadest context — needs the full project picture       |
@@ -494,7 +527,7 @@ File trees are capped at 100–200 entries and limited to depth 3 to prevent con
 1. Fork the repository
 2. Create a branch: `git checkout -b feature/my-feature`
 3. Follow the existing patterns for new commands
-4. Test with both `claude` and `copilot` providers using `--dry-run`
+4. Test with the `claude`, `copilot`, and `cursor` providers using `--dry-run`
 5. Submit a PR with a clear description of what and why
 
 ### Adding a New Command
