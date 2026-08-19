@@ -26,7 +26,8 @@ Think of it as a **context orchestrator** — it knows what information each typ
 | **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                     |
 | **Command Chaining**            | Run several commands back to back with `chain`, sharing the same prompt and file handoff |
 | **Deep Review Mode**            | `--deep` runs `review`/`audit` as 3 parallel lenses plus a verification pass            |
-| **True Read-Only Planning**     | `planning` runs in each provider's real plan mode — it cannot edit files even if it tries |
+| **True Read-Only Commands**     | `planning`, `review`, `audit`, `debug`, `playwright`, `explain` run in each provider's real plan mode — they cannot edit files even if they try |
+| **Base Branch Detection**       | Diffs against the repo's actual default branch (`origin/HEAD`, or a local `main`/`master`), not a hardcoded `master` |
 
 ---
 
@@ -148,7 +149,7 @@ ai-cli claude --planning planning "design a caching layer"
 
 ### `audit` — Bug-hunt the branch's changes
 
-Reviews the current source-control changes (staged, unstaged, and against master) against the criteria in `BUG-HUNTING.md`, looking specifically for bugs, inefficiencies, and unclear code introduced by this branch. Writes findings to `REVIEW.md`.
+Reviews the current source-control changes (staged, unstaged, and against the repo's default branch) against the criteria in `BUG-HUNTING.md`, looking specifically for bugs, inefficiencies, and unclear code introduced by this branch. Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
 
 ```bash
 ai-cli claude audit "focus on the payment retry logic"
@@ -157,11 +158,11 @@ ai-cli claude audit "focus on the payment retry logic"
 ai-cli claude --deep audit "focus on the payment retry logic"
 ```
 
-- **Context:** branch, status, commits, staged files, unstaged files, changed files vs master
+- **Context:** branch, status, commits, staged files, unstaged files, changed files vs the default branch
 - **Model:** sonnet
 - **Reads:** `.ai-private/BUG-HUNTING.md`
 - **Output:** `.ai-private/REVIEW.md` (overwritten), findings grouped by severity
-- **Avoids modifying or refactoring code outside this branch's changes**
+- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify files even if instructed to
 - **Supports `--deep`** (see [Deep Review Mode](#deep-review-mode))
 
 ---
@@ -200,7 +201,7 @@ ai-cli claude commit "focus on the auth changes"
 
 ### `debug` — Root cause analysis
 
-Analyzes the bug described in `DEBUG.md`, traces the root cause, proposes the smallest safe fix, and writes findings to `REVIEW.md`.
+Analyzes the bug described in `DEBUG.md`, traces the root cause, and proposes the smallest safe fix (as a diff/snippet in its response). Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
 
 ```bash
 # Uses opus by default (most capable — see note on cost below)
@@ -214,7 +215,7 @@ ai-cli claude --model sonnet debug "..."
 - **Model:** **opus** (override with `--model sonnet` to reduce cost)
 - **Reads:** `CLAUDE.md`, `.ai-private/DEBUG.md`
 - **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/debug-{timestamp}.html`
-- **Does NOT modify source files**
+- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
 
 ---
 
@@ -231,6 +232,7 @@ ai-cli copilot explain "what is the data flow in the checkout process?"
 - **Model:** **opus**
 - **Reads:** `CLAUDE.md`
 - **Output:** Explanation printed to terminal
+- **Structurally read-only** — runs in the provider's real plan mode (no output file to auto-save; nothing to save for a pure explanation)
 
 ---
 
@@ -258,7 +260,7 @@ Applies the bugs and improvements listed in `.ai-private/REVIEW.md`. Only touche
 ai-cli claude fix "apply the security and performance suggestions"
 ```
 
-- **Context:** branch, status, commits, changed files
+- **Context:** branch, status, commits, changed files (vs the repo's default branch)
 - **Model:** sonnet
 - **Reads:** `CLAUDE.md`, `.ai-private/REVIEW.md`
 - **Output:** Source file changes
@@ -284,7 +286,7 @@ ai-cli claude lint "fix all lint errors in the changed files"
 
 Creates a detailed implementation plan and writes it to `.ai-private/PLANNING.md`.
 
-Unlike other commands, `planning` runs the provider in its actual read-only **plan mode** (`claude --permission-mode plan`, `copilot --plan`, `cursor-agent --plan --trust`) instead of the usual skip-permissions flags — testing showed those flags silently override plan mode and let the model edit files anyway. Since the model has no ability to write files in this mode, it returns the plan as its response text, and `ai-cli` itself captures that output and saves it to `PLANNING.md`. If `--planning` is also set, the model appends the HTML visualization as a fenced HTML code block at the end of its response, which `ai-cli` splits out into its own file afterwards.
+`planning` runs the provider in its actual read-only **plan mode** (`claude --permission-mode plan`, `copilot --plan`, `cursor-agent --plan --trust`) instead of the usual skip-permissions flags — testing showed those flags silently override plan mode and let the model edit files anyway. Since the model has no ability to write files in this mode, it returns the plan as its response text, and `ai-cli` itself captures that output and saves it to `PLANNING.md`. If `--planning` is also set, the model appends the HTML visualization as a fenced HTML code block at the end of its response, which `ai-cli` splits out into its own file afterwards. See [True Read-Only Commands](#true-read-only-commands) — the same mechanism now also covers `review`, `audit`, `debug`, `playwright`, and `explain`.
 
 ```bash
 ai-cli claude planning "design a caching layer for the API endpoints"
@@ -301,7 +303,7 @@ ai-cli claude --planning planning "design a caching layer for the API endpoints"
 
 ### `pr` — Generate a PR description
 
-Generates a pull request description for the current branch against master.
+Generates a pull request description for the current branch against the repo's default branch.
 
 ```bash
 ai-cli claude pr "highlight the security improvements"
@@ -316,7 +318,7 @@ ai-cli claude pr "highlight the security improvements"
 
 ### `playwright` — Analyze Playwright test failures
 
-Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch. With the `claude` provider, stale mocks/HAR files are hinted to be updated using the repo's `update-playwright-mocks` skill, one test at a time.
+Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch. With the `claude` provider, stale mocks/HAR files are hinted to be updated using the repo's `update-playwright-mocks` skill, one test at a time. Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
 
 ```bash
 ai-cli claude playwright "investigate the failing checkout e2e"
@@ -326,7 +328,7 @@ ai-cli claude playwright "investigate the failing checkout e2e"
 - **Model:** sonnet
 - **Reads:** `CLAUDE.md`
 - **Output:** `.ai-private/REVIEW.md`
-- **Does NOT modify source files**
+- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
 
 ---
 
@@ -347,7 +349,7 @@ ai-cli claude refactor "apply the suggested performance optimizations"
 
 ### `review` — Code review
 
-Reviews all changed files against master, checks for bugs, style violations, missing tests, performance issues, and security concerns. Writes findings to `REVIEW.md`. With the `claude` provider, the security-concerns check is hinted to use the repo's `security-review` skill.
+Reviews all changed files against the repo's default branch, checks for bugs, style violations, missing tests, performance issues, and security concerns. With the `claude` provider, the security-concerns check is hinted to use the repo's `security-review` skill. Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
 
 ```bash
 ai-cli claude review "focus on security and error handling"
@@ -361,7 +363,7 @@ ai-cli claude --deep review "focus on security and error handling"
 - **Model:** sonnet
 - **Reads:** `CLAUDE.md`, `.ai-private/REVIEW.md`
 - **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/review-{timestamp}.html`
-- **Does NOT modify source files**
+- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
 - **Supports `--deep`** (see [Deep Review Mode](#deep-review-mode))
 
 ---
@@ -424,6 +426,18 @@ ai-cli cursor "summarize the open TODOs in this file"
 
 ---
 
+### `sync-db90` — Refresh standards via the DB90 MCP
+
+`ai-cli` is a plain shell script; DB90 is an MCP tool, only reachable from inside an AI chat/agent session, not from a shell process. `sync-db90` can't call DB90 itself — it prints a ready-to-paste prompt so a Cursor/Claude Code chat in this repo can invoke DB90 on your behalf and refresh the standards `ai-cli` relies on: `CLAUDE.md`/`docs/` (via `initialize_rules`/`update_rules`), the Skills referenced by `skill_hint()` (via `setup_agents`), the MCP servers `suggestions` assumes (via `setup_mcp_servers`), and the PR template `pr` should follow (via `download_pr_templates`).
+
+```bash
+ai-cli sync-db90
+```
+
+Takes no provider/command — it's a standalone maintenance helper, not an AI-provider call. Run it occasionally (new repo, new framework major version, or whenever `ai-cli`'s output feels out of sync with current team conventions), then paste the printed block into your AI chat.
+
+---
+
 ## Deep Review Mode
 
 `--deep` (available on `review` and `audit`) trades speed and cost for precision:
@@ -440,7 +454,25 @@ ai-cli claude --deep review "focus on the checkout flow"
 ai-cli claude --deep audit "focus on the payment retry logic"
 ```
 
-This runs 4 AI calls total instead of 1, so expect roughly 4x the cost/latency of a normal `review`/`audit` — reserve it for changes where false positives or missed findings are expensive.
+This runs 4 AI calls total instead of 1, so expect roughly 4x the cost/latency of a normal `review`/`audit` — reserve it for changes where false positives or missed findings are expensive. Every lens sub-pass and the final merge pass inherit the parent command's real plan mode (see below), so they're structurally read-only too, not just by prompt wording.
+
+---
+
+## True Read-Only Commands
+
+`planning`, `review`, `audit`, `debug`, `playwright`, and `explain` never modify files by design, so they run in each provider's actual read-only **plan mode** (`claude --permission-mode plan`, `copilot --plan`, `cursor-agent --plan --trust`) instead of the usual skip-permissions/allow-all flags — testing showed those flags silently override plan mode and let the model edit files anyway, so they must never be combined with it.
+
+Since the model has no ability to write files in this mode, it returns its findings/plan as response text, and `ai-cli` itself captures that output and saves it to whichever file the command would otherwise have asked the model to write:
+
+| Command                                    | Auto-saved to                     |
+| ------------------------------------------- | ---------------------------------- |
+| `planning`                                  | `.ai-private/PLANNING.md`          |
+| `review`, `audit`, `debug`, `playwright`    | `.ai-private/REVIEW.md`            |
+| `explain`                                   | *(nothing — printed to terminal)*  |
+
+If `--planning` is also set on a command that supports it (`planning`, `review`, `debug`), the model appends the HTML visualization as a fenced ` ```html ` code block at the end of its response, which `ai-cli` splits out into its own timestamped file under `.ai-private/tasks/` afterwards.
+
+A `--deep` lens sub-pass (see above) is the one exception that *doesn't* auto-save — its output is only merged by the final pass, not written to `REVIEW.md` on its own.
 
 ---
 
@@ -491,7 +523,7 @@ ai-cli claude review "check for security issues"
          ▼
 5. Generate dynamic context
    • git branch, status, log
-   • git diff --name-only master...HEAD
+   • git diff --name-only $BASE_BRANCH...HEAD (detected default branch, not hardcoded)
    • File tree / diff stats (command-specific)
    • Live command output (test command only)
    • PR info from gh pr view (suggestions only)
@@ -504,21 +536,22 @@ ai-cli claude review "check for security issues"
    ### USER REQUEST    — your prompt
          │
          ▼
-7. Execute AI provider (normal commands vs. planning's read-only plan mode)
+7. Execute AI provider (normal commands vs. true read-only plan mode —
+   see True Read-Only Commands above for which commands use which)
    • claude  --print --dangerously-skip-permissions [--model X] "<prompt>"
-   • claude  --print --permission-mode plan          [--model X] "<prompt>"   (planning)
+   • claude  --print --permission-mode plan          [--model X] "<prompt>"   (read-only)
    • copilot --allow-all-tools --allow-all-paths --silent --add-dir $REPO_ROOT -p "<prompt>"
-   • copilot --plan --silent --add-dir $REPO_ROOT -p "<prompt>"                (planning)
+   • copilot --plan --silent --add-dir $REPO_ROOT -p "<prompt>"                (read-only)
    • cursor-agent --print --force --trust --output-format stream-json \
        --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'
    • cursor-agent --print --plan --trust --output-format stream-json \
-       --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'  (planning)
+       --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'  (read-only)
          │
          ▼
 8. Output
    • AI response in terminal
-   • Generated .md files in .ai-private/ (planning: captured from the model's response
-     and written by ai-cli itself, since plan mode can't write files)
+   • Generated .md files in .ai-private/ (read-only commands: captured from the model's
+     response and written by ai-cli itself, since plan mode can't write files)
    • Interactive HTML plans in .ai-private/tasks/
 ```
 
@@ -529,7 +562,7 @@ ai-cli claude review "check for security issues"
 | Function              | Used by                                                           | What it includes                                                                |
 | --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `base_repo_context()` | all                                                               | Branch name, `git status`, last 8 commits                                       |
-| `review_context()`    | commit, fix, lint, pr, refactor, review, suggestions, test, types | `base_repo_context` + changed files vs master                                   |
+| `review_context()`    | commit, fix, lint, pr, refactor, review, suggestions, test, types | `base_repo_context` + changed files vs the detected default branch              |
 | `feature_context()`   | explain, feature                                                  | `review_context` + file tree (depth 3, max 200)                                 |
 | `refactor_context()`  | audit, refactor                                                   | `base_repo_context` + staged, unstaged, and changed files                       |
 | `debug_context()`     | debug                                                             | `review_context` + diff stats + `package.json` scripts                          |
@@ -552,6 +585,33 @@ The dry-run output shows:
 - The exact CLI command that would be run
 - The full prompt (without static context to keep it readable)
 - Prompt size in characters and lines
+
+---
+
+## Base Branch Detection
+
+Every context function that diffs "against the branch" resolves the repo's actual default branch instead of assuming `master`:
+
+1. The remote's recorded HEAD (`git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `git remote show origin` if that's unset).
+2. A local or remote `main` or `master` branch that exists, in that order.
+3. `master`, if none of the above resolved to anything (e.g. a brand-new repo with no commits yet).
+
+This runs once per invocation and is used everywhere a base branch was previously hardcoded (`review`, `audit`, `debug`, `fix`, `pr`, `playwright`, and the `planning`/`refactor` context builders).
+
+---
+
+## Working with DB90
+
+DB90 (see the `sync-db90` command above) is Dualboot's internal MCP for company-wide standards — it's the provisioning layer for the conventions `ai-cli` consumes at runtime:
+
+| `ai-cli` assumes/reads...                                                                 | DB90 provisions/maintains it via...                          |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| `CLAUDE.md` + `docs/` as static context, and "follow project conventions in docs/" in `review`/`refactor`/`feature` | `initialize_rules` / `update_rules`, with profiles matched to the detected stack (Next.js 14/15, Angular pre/post-18, NestJS 11, ...) |
+| The Skills referenced by `skill_hint()` (`security-review`, `update-playwright-mocks`) in `review`/`playwright` | `setup_agents`, which installs agent/skill bundles into `.claude/` and/or `.cursor/`   |
+| The GitHub MCP server `suggestions` asks the model to use                                  | `setup_mcp_servers`, which downloads the right `mcp.json` for the project type |
+| The generic Summary/Changes/Testing format `pr` generates                                  | `download_pr_templates`, which fetches the company's actual PR template (GitHub/Azure DevOps) |
+
+Run `ai-cli sync-db90` for a ready-to-paste prompt that walks an AI chat through refreshing all four.
 
 ---
 
