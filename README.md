@@ -669,4 +669,4 @@ MIT License — Feel free to use, modify, and distribute.
 
 **Made for developers who want AI to work smarter, not harder.**
 
-If you ask for a better question, will get a better answer - [Ricardo Castillo (dilettant poet)](https://www.ricardocastillo.com)
+If you ask for better question, will get a better answer - [Ricardo Castillo (dilettant poet)](https://www.ricardocastillo.com)
