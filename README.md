@@ -16,7 +16,7 @@ Think of it as a **context orchestrator** — it knows what information each typ
 
 | Benefit                         | Description                                                                            |
 | ------------------------------- | -------------------------------------------------------------------------------------- |
-| **Structured Workflows**        | 15 pre-built commands for common dev tasks across the full development lifecycle       |
+| **Structured Workflows**        | 15 pre-built commands (plus `chain` to compose them) across the full development lifecycle |
 | **Automatic Context Injection** | Automatically gathers git status, recent commits, changed files, and project structure |
 | **Token Efficiency**            | Sends only relevant context per task type, avoiding unnecessary token consumption      |
 | **Provider Agnostic**           | Switch between Claude, Copilot, and Cursor with a single word                          |
@@ -24,6 +24,9 @@ Think of it as a **context orchestrator** — it knows what information each typ
 | **Dry-Run Mode**                | Preview the exact prompt and command before execution                                  |
 | **Model Override**              | Override the default model per-run with `--model`                                      |
 | **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                     |
+| **Command Chaining**            | Run several commands back to back with `chain`, sharing the same prompt and file handoff |
+| **Deep Review Mode**            | `--deep` runs `review`/`audit` as 3 parallel lenses plus a verification pass            |
+| **True Read-Only Planning**     | `planning` runs in each provider's real plan mode — it cannot edit files even if it tries |
 
 ---
 
@@ -118,13 +121,15 @@ ai-cli [flags] <provider> [flags] <command> "your request"
 
 ### Flags
 
-| Flag                | Short       | Description                                                                                  |
-| ------------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| `--dry-run`         | `-d`        | Show the generated prompt and provider command without executing                             |
-| `--model <name>`    | `-m <name>` | Override the default model for this run                                                      |
-| `--planning [bool]` | `-p [bool]` | Enable the interactive HTML task visualization for commands that support it (off by default) |
+| Flag             | Short | Description                                                                                                          |
+| ---------------- | ----- | --------------------------------------------------------------------------------------------------------------------- |
+| `--dry-run`      | `-d`  | Show the generated prompt and provider command without executing                                                    |
+| `--model <name>` | `-m`  | Override the default model for this run                                                                             |
+| `--planning`     | `-p`  | Plain switch — generate the interactive HTML task visualization for commands that support it (off by default)      |
+| `--yes`          | `-y`  | `chain` only — run every step without pausing to confirm between steps                                              |
+| `--deep`         |       | `review`/`audit` only — run 3 parallel review lenses plus a verification pass (see [Deep Review](#deep-review-mode))|
 
-Flags can appear **before or after** the provider:
+Flags can appear **before or after the provider, but not after the command**:
 
 ```bash
 ai-cli --dry-run claude review "..."
@@ -134,7 +139,7 @@ ai-cli --model haiku claude lint "..."
 ai-cli claude --model haiku lint "..."
 
 ai-cli --planning claude planning "design a caching layer"
-ai-cli claude planning --planning "design a caching layer"
+ai-cli claude --planning planning "design a caching layer"
 ```
 
 ---
@@ -147,6 +152,9 @@ Reviews the current source-control changes (staged, unstaged, and against master
 
 ```bash
 ai-cli claude audit "focus on the payment retry logic"
+
+# Higher-precision pass: 3 parallel lenses + a verification pass (see Deep Review Mode below)
+ai-cli claude --deep audit "focus on the payment retry logic"
 ```
 
 - **Context:** branch, status, commits, staged files, unstaged files, changed files vs master
@@ -154,6 +162,24 @@ ai-cli claude audit "focus on the payment retry logic"
 - **Reads:** `.ai-private/BUG-HUNTING.md`
 - **Output:** `.ai-private/REVIEW.md` (overwritten), findings grouped by severity
 - **Avoids modifying or refactoring code outside this branch's changes**
+- **Supports `--deep`** (see [Deep Review Mode](#deep-review-mode))
+
+---
+
+### `chain` — Run multiple commands back to back
+
+Runs a sequence of known commands one after another, sharing the same prompt and the same file handoff (`PLANNING.md`, `REVIEW.md`, ...) each step already reads/writes. Needs at least 2 steps, separated from the shared prompt by a literal `--` (mandatory, so a prompt that happens to start with a command name like "fix the login bug" isn't misread as an extra step).
+
+Pauses for confirmation between steps unless `--yes`/`-y` is set. Stops immediately if a step fails.
+
+```bash
+ai-cli claude chain planning feature review -- "add rate limiting to the login endpoint"
+ai-cli claude --yes chain audit fix -- "clean up the payment retry logic"
+```
+
+- Each step uses that command's own default model, context, and output files — `chain` is just an orchestrator around `dispatch_command()`, not a separate workflow
+- `--dry-run` shows the generated prompt/command for every step without running any of them
+- `--yes`/`-y` and `--deep` apply to the whole chain (e.g. `--deep` makes every `review`/`audit` step in the chain run deep)
 
 ---
 
@@ -256,17 +282,20 @@ ai-cli claude lint "fix all lint errors in the changed files"
 
 ### `planning` — Generate an implementation plan
 
-Creates a detailed implementation plan and writes it to `.ai-private/PLANNING.md`. Does not modify source files.
+Creates a detailed implementation plan and writes it to `.ai-private/PLANNING.md`.
+
+Unlike other commands, `planning` runs the provider in its actual read-only **plan mode** (`claude --permission-mode plan`, `copilot --plan`, `cursor-agent --plan --trust`) instead of the usual skip-permissions flags — testing showed those flags silently override plan mode and let the model edit files anyway. Since the model has no ability to write files in this mode, it returns the plan as its response text, and `ai-cli` itself captures that output and saves it to `PLANNING.md`. If `--planning` is also set, the model appends the HTML visualization as a fenced HTML code block at the end of its response, which `ai-cli` splits out into its own file afterwards.
 
 ```bash
 ai-cli claude planning "design a caching layer for the API endpoints"
+ai-cli claude --planning planning "design a caching layer for the API endpoints"
 ```
 
 - **Context:** branch, status, commits, changed files, source files (.ts/.tsx/.js), full file tree (depth 3, max 100)
 - **Model:** **opus**
 - **Reads:** `CLAUDE.md`, `.ai-private/PLANNING.md`
-- **Output:** `.ai-private/PLANNING.md`, `.ai-private/tasks/planning-{timestamp}.html`
-- **Does NOT modify source files**
+- **Output:** `.ai-private/PLANNING.md`, `.ai-private/tasks/planning-{timestamp}.html` (only with `--planning`)
+- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
 
 ---
 
@@ -287,7 +316,7 @@ ai-cli claude pr "highlight the security improvements"
 
 ### `playwright` — Analyze Playwright test failures
 
-Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch.
+Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch. With the `claude` provider, stale mocks/HAR files are hinted to be updated using the repo's `update-playwright-mocks` skill, one test at a time.
 
 ```bash
 ai-cli claude playwright "investigate the failing checkout e2e"
@@ -318,11 +347,14 @@ ai-cli claude refactor "apply the suggested performance optimizations"
 
 ### `review` — Code review
 
-Reviews all changed files against master, checks for bugs, style violations, missing tests, performance issues, and security concerns. Writes findings to `REVIEW.md`.
+Reviews all changed files against master, checks for bugs, style violations, missing tests, performance issues, and security concerns. Writes findings to `REVIEW.md`. With the `claude` provider, the security-concerns check is hinted to use the repo's `security-review` skill.
 
 ```bash
 ai-cli claude review "focus on security and error handling"
 ai-cli copilot review "check for performance regressions"
+
+# Higher-precision pass: 3 parallel lenses + a verification pass (see Deep Review Mode below)
+ai-cli claude --deep review "focus on security and error handling"
 ```
 
 - **Context:** branch, status, commits, changed files
@@ -330,6 +362,7 @@ ai-cli copilot review "check for performance regressions"
 - **Reads:** `CLAUDE.md`, `.ai-private/REVIEW.md`
 - **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/review-{timestamp}.html`
 - **Does NOT modify source files**
+- **Supports `--deep`** (see [Deep Review Mode](#deep-review-mode))
 
 ---
 
@@ -391,6 +424,26 @@ ai-cli cursor "summarize the open TODOs in this file"
 
 ---
 
+## Deep Review Mode
+
+`--deep` (available on `review` and `audit`) trades speed and cost for precision:
+
+1. Runs the command's normal instruction **3 times in parallel**, each restricted to one lens:
+   - correctness and bugs
+   - security vulnerabilities (OWASP top 10, injection, auth, secrets)
+   - performance, code quality, and adherence to project conventions in `docs/`
+   Each lens pass is report-only — it's explicitly told not to modify, fix, or refactor any file, even if the base instruction says otherwise.
+2. Runs one more pass that cross-checks all three lenses' findings against the actual diff, discards anything speculative or that doesn't hold up, merges duplicates reported by more than one lens, and writes only what survives to `REVIEW.md` (grouped by severity, noting which lens(es) found each item).
+
+```bash
+ai-cli claude --deep review "focus on the checkout flow"
+ai-cli claude --deep audit "focus on the payment retry logic"
+```
+
+This runs 4 AI calls total instead of 1, so expect roughly 4x the cost/latency of a normal `review`/`audit` — reserve it for changes where false positives or missed findings are expensive.
+
+---
+
 ## Model Reference
 
 | Command       | Default Model | Notes                                                               |
@@ -398,7 +451,8 @@ ai-cli cursor "summarize the open TODOs in this file"
 | `debug`       | opus          | Most expensive; override with `--model sonnet` if cost is a concern |
 | `planning`    | opus          | Complex reasoning task                                              |
 | `explain`     | opus          | Best for architectural explanations                                 |
-| `audit`       | sonnet        | Bug-hunts the branch's changes against `BUG-HUNTING.md`             |
+| `audit`       | sonnet        | Bug-hunts the branch's changes against `BUG-HUNTING.md`; supports `--deep` |
+| `chain`       | n/a           | Each step uses its own command's default model; no model of its own |
 | `commit`      | sonnet        |                                                                     |
 | `feature`     | sonnet        |                                                                     |
 | `fix`         | sonnet        |                                                                     |
@@ -406,7 +460,7 @@ ai-cli cursor "summarize the open TODOs in this file"
 | `playwright`  | sonnet        | Analyzes Playwright E2E failures and suggests fixes                 |
 | `pr`          | sonnet        |                                                                     |
 | `refactor`    | sonnet        |                                                                     |
-| `review`      | sonnet        |                                                                     |
+| `review`      | sonnet        | Supports `--deep`                                                  |
 | `suggestions` | sonnet        |                                                                     |
 | `test`        | sonnet        |                                                                     |
 | `types`       | sonnet        |                                                                     |
@@ -425,7 +479,7 @@ ai-cli cursor "summarize the open TODOs in this file"
 ai-cli claude review "check for security issues"
          │
          ▼
-1. Parse flags (--dry-run, --model, --planning) and provider
+1. Parse flags (--dry-run, --model, --planning, --yes, --deep) and provider
 2. Validate: inside a git repo, CLAUDE.md exists
 3. Auto-create .ai-private/ if missing
          │
@@ -450,18 +504,25 @@ ai-cli claude review "check for security issues"
    ### USER REQUEST    — your prompt
          │
          ▼
-7. Execute AI provider
-   • claude --dangerously-skip-permissions [--model X] "<prompt>"
-   • copilot --allow-all-tools --allow-all-paths --add-dir $REPO_ROOT -i "<prompt>"
+7. Execute AI provider (normal commands vs. planning's read-only plan mode)
+   • claude  --print --dangerously-skip-permissions [--model X] "<prompt>"
+   • claude  --print --permission-mode plan          [--model X] "<prompt>"   (planning)
+   • copilot --allow-all-tools --allow-all-paths --silent --add-dir $REPO_ROOT -p "<prompt>"
+   • copilot --plan --silent --add-dir $REPO_ROOT -p "<prompt>"                (planning)
    • cursor-agent --print --force --trust --output-format stream-json \
        --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'
+   • cursor-agent --print --plan --trust --output-format stream-json \
+       --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'  (planning)
          │
          ▼
 8. Output
    • AI response in terminal
-   • Generated .md files in .ai-private/
+   • Generated .md files in .ai-private/ (planning: captured from the model's response
+     and written by ai-cli itself, since plan mode can't write files)
    • Interactive HTML plans in .ai-private/tasks/
 ```
+
+`chain` repeats steps 1–8 once per known command in the chain, in order, sharing the prompt and reusing whatever files each step already reads/writes.
 
 ### Context Functions
 

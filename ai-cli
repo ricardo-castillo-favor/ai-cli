@@ -5,6 +5,8 @@ set -euo pipefail
 DRY_RUN=false
 MODEL_OVERRIDE=""
 PLANNING_HTML=false
+CHAIN_YES=false
+DEEP=false
 
 # Translate model names between providers
 # Claude: opus, sonnet, haiku
@@ -101,14 +103,25 @@ usage() {
   echo "  ai-cli cursor test \"your request\""
   echo "  ai-cli cursor types \"your request\""
   echo ""
+  echo "  ai-cli claude chain planning feature review -- \"your request\""
+  echo "  ai-cli claude --yes chain audit fix -- \"your request\""
+  echo ""
   echo "Options:"
   echo "  --dry-run, -d        Show the generated prompt without executing"
   echo "  --model, -m          Override the default model (e.g., --model haiku)"
-  echo "  --planning, -p       Generate planning HTML visualization (default: true)"
+  echo "  --planning, -p       Generate planning HTML visualization (off by default)"
+  echo "  --yes, -y            Chain only: run every step without pausing to confirm"
+  echo "  --deep               review/audit only: 3 parallel review lenses + a"
+  echo "                       verification pass that discards unconfirmed findings"
   echo ""
-  echo "Flags can appear before or after the provider:"
+  echo "Flags can appear before or after the provider (not after the command):"
   echo "  ai-cli --model haiku claude review \"...\""
   echo "  ai-cli claude --model haiku review \"...\""
+  echo ""
+  echo "chain runs known commands back to back, sharing the same prompt and the"
+  echo "same file handoff (PLANNING.md, REVIEW.md, ...) each step already reads/writes."
+  echo "Pauses for confirmation between steps unless --yes is set. Stops immediately"
+  echo "if a step fails."
   echo ""
   echo "Default models per command: debug/planning/explain → opus, others → sonnet"
 }
@@ -118,59 +131,52 @@ if [ "$#" -eq 0 ]; then
   exit 1
 fi
 
-# Parse global flags (--dry-run, --model, --planning) — accepted before provider
-while true; do
-  case "${1:-}" in
-    --dry-run|-d)
-      DRY_RUN=true
-      shift
-      ;;
-    --model|-m)
-      shift
-      MODEL_OVERRIDE="${1:-}"
-      shift || true
-      ;;
-    --planning|-p)
-      shift
-      PLANNING_HTML="${1:-true}"
-      shift || true
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
+# Parses --dry-run/--model/--planning off the front of "$@"; leftover args
+# land in PARSED_REMAINING for the caller to `set --` back into position.
+# Called twice below so flags work before or after the provider.
+parse_global_flags() {
+  while true; do
+    case "${1:-}" in
+      --dry-run|-d)
+        DRY_RUN=true
+        shift
+        ;;
+      --model|-m)
+        shift
+        MODEL_OVERRIDE="${1:-}"
+        shift || true
+        ;;
+      --planning|-p)
+        PLANNING_HTML=true
+        shift
+        ;;
+      --yes|-y)
+        CHAIN_YES=true
+        shift
+        ;;
+      --deep)
+        DEEP=true
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  PARSED_REMAINING=("$@")
+}
+
+parse_global_flags "$@"
+set -- "${PARSED_REMAINING[@]}"
 
 PROVIDER="${1:-}"
 shift || true
 
-# Also accept flags after provider for backward compatibility
-while true; do
-  case "${1:-}" in
-    --dry-run|-d)
-      DRY_RUN=true
-      shift
-      ;;
-    --model|-m)
-      shift
-      MODEL_OVERRIDE="${1:-}"
-      shift || true
-      ;;
-    --planning|-p)
-      shift
-      PLANNING_HTML="${1:-false}"
-      shift || true
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
+parse_global_flags "$@"
+set -- "${PARSED_REMAINING[@]}"
 
 COMMAND="${1:-}"
 shift || true
-
-PROMPT="$*"
 
 KNOWN_COMMANDS=("audit" "commit" "debug" "explain" "feature" "fix" "lint" "playwright" "pr" "refactor" "review" "planning" "suggestions" "test" "types")
 
@@ -179,7 +185,36 @@ if [ -z "$COMMAND" ]; then
   exit 1
 fi
 
-if [[ ! " ${KNOWN_COMMANDS[*]} " =~ " ${COMMAND} " ]]; then
+# "chain" takes steps up to a literal "--", then everything after it is the
+# shared prompt. The "--" is mandatory (not inferred from KNOWN_COMMANDS)
+# because a prompt starting with a word that happens to also be a command
+# name (e.g. "fix the login bug") would otherwise get silently swallowed as
+# an extra step instead of treated as the prompt.
+CHAIN_STEPS=()
+if [ "$COMMAND" = "chain" ]; then
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    if [[ ! " ${KNOWN_COMMANDS[*]} " =~ " ${1} " ]]; then
+      echo "Error: '$1' is not a known command for 'chain'."
+      echo "Known commands: ${KNOWN_COMMANDS[*]}"
+      exit 1
+    fi
+    CHAIN_STEPS+=("$1")
+    shift
+  done
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+  if [ "${#CHAIN_STEPS[@]}" -lt 2 ]; then
+    echo "Error: 'chain' needs at least 2 known commands, separated from the"
+    echo "prompt by --, e.g.:"
+    echo "  ai-cli claude chain planning feature review -- \"your request\""
+    exit 1
+  fi
+fi
+
+PROMPT="$*"
+
+if [ "$COMMAND" != "chain" ] && [[ ! " ${KNOWN_COMMANDS[*]} " =~ " ${COMMAND} " ]]; then
   PROMPT="$COMMAND $PROMPT"
   COMMAND="chat"
 fi
@@ -236,6 +271,51 @@ html_task_instruction() {
   echo "Based on the above, create a clean, interactive, professional HTML/CSS/JS self-contained '${COMMAND}-${ts}.html' with modern styling (layout, colors, filters, charts). Save to $AI_PRIVATE_DIR/tasks/${COMMAND}-${ts}.html (create folder if needed)."
 }
 
+# Same as html_task_instruction, but for plan mode: the model can't write a
+# file, so it emits the HTML inline as a fenced ```html code block and
+# write_plan_output() (below) splits it out into its own file afterwards.
+# Earlier version used a bare "###MARKER###" sentinel instead of a normal
+# code fence — tested directly, a model asked to emit an arbitrary sentinel
+# string with no framing read it as a prompt-injection attempt and refused.
+# A ```html fence is a completely ordinary thing to ask for, so it doesn't
+# trip that same instinct, and it's what write_plan_output now looks for.
+html_task_instruction_inline() {
+  if [ "$PLANNING_HTML" != "true" ]; then
+    echo ""
+    return
+  fi
+  echo "Also produce a clean, interactive, professional HTML/CSS/JS self-contained infographic of this plan (layout, colors, filters, charts). You have no access to write files in this pass, so output the complete HTML as the very last thing in your response, as a single fenced code block starting with \`\`\`html on its own line and ending with a closing \`\`\` on its own line, with nothing after it."
+}
+
+# Writes a plan-mode response to $PLANNING, splitting out an inline ```html
+# fenced block (see html_task_instruction_inline) into its own timestamped
+# file if present.
+write_plan_output() {
+  local output="$1"
+  if ! grep -qE '^```html[[:space:]]*$' <<< "$output"; then
+    echo "$output" > "$PLANNING"
+    return
+  fi
+
+  local ts html_file
+  ts=$(date +%Y%m%d-%H%M%S)
+  html_file="$AI_PRIVATE_DIR/tasks/planning-${ts}.html"
+  mkdir -p "$AI_PRIVATE_DIR/tasks"
+
+  awk '/^```html[[:space:]]*$/ { exit } { print }' <<< "$output" > "$PLANNING"
+  awk '
+    /^```html[[:space:]]*$/ { f = 1; next }
+    f && /^```[[:space:]]*$/ { f = 0; next }
+    f
+  ' <<< "$output" > "$html_file"
+
+  if [ -s "$html_file" ]; then
+    echo "HTML task saved to $html_file"
+  else
+    rm -f "$html_file"
+  fi
+}
+
 # Note about paths (used in prompts) - uses absolute path
 PATH_NOTE="IMPORTANT: All output files must be written to $AI_PRIVATE_DIR/ (absolute path)."
 
@@ -243,6 +323,12 @@ PATH_NOTE="IMPORTANT: All output files must be written to $AI_PRIVATE_DIR/ (abso
 # Only "assistant"/"thinking" events carrying timestamp_ms are true incremental deltas —
 # cursor-agent re-emits a duplicate consolidated event (no timestamp_ms) after each one, which
 # this filter skips to avoid printing every chunk twice.
+# Points to a repo Skill instead of hand-rolling its instructions — claude-only,
+# since Skills are a Claude Code concept that copilot/cursor don't share.
+skill_hint() {
+  [ "$PROVIDER" = "claude" ] && echo " $1"
+}
+
 cursor_stream_jq_filter() {
   cat <<'JQ'
 if .type == "thinking" and .subtype == "delta" then .text
@@ -283,6 +369,20 @@ run_ai() {
   fi
   echo "Dry-run  : $DRY_RUN"
   echo "Planning : $PLANNING_HTML"
+
+  # The 'planning' command runs read-only in each provider's plan mode
+  # instead of its normal skip-permissions/allow-all flags — those flags
+  # were confirmed (by direct testing) to silently override plan mode and
+  # let the model edit files anyway, so they must not be combined.
+  local perm_flags=""
+  local plan_mode=false
+  [ "$COMMAND" = "planning" ] && plan_mode=true
+  case "$PROVIDER" in
+    claude)  perm_flags=$([ "$plan_mode" = true ] && echo "--permission-mode plan" || echo "--dangerously-skip-permissions") ;;
+    copilot) perm_flags=$([ "$plan_mode" = true ] && echo "--plan" || echo "--allow-all-tools --allow-all-paths") ;;
+    cursor)  perm_flags=$([ "$plan_mode" = true ] && echo "--plan --trust" || echo "--force --trust") ;;
+  esac
+  echo "Plan mode: $plan_mode"
   echo "═══════════════════════════════════════════════════════════════"
 
   if [ "$DRY_RUN" = true ]; then
@@ -301,50 +401,57 @@ run_ai() {
         cmd_prefix="{ $dynamic_cmds; }"
       fi
     fi
-    
+
+    local tee_suffix=""
+    if [ "$plan_mode" = true ] && [ "$PLANNING_HTML" = true ]; then
+      tee_suffix=" (captured, split into \$PLANNING + an HTML task file via write_plan_output)"
+    elif [ "$plan_mode" = true ]; then
+      tee_suffix=" | tee \$PLANNING"
+    fi
+
     case "$PROVIDER" in
       copilot)
         if [ -n "$cmd_prefix" ]; then
           if [ -n "$resolved_model" ]; then
-            echo "$cmd_prefix | copilot --model $resolved_model --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+            echo "$cmd_prefix | copilot --model $resolved_model $perm_flags --silent --add-dir \$REPO_ROOT -p \"<PROMPT>\"$tee_suffix"
           else
-            echo "$cmd_prefix | copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+            echo "$cmd_prefix | copilot $perm_flags --silent --add-dir \$REPO_ROOT -p \"<PROMPT>\"$tee_suffix"
           fi
         else
           if [ -n "$resolved_model" ]; then
-            echo "copilot --model $resolved_model --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+            echo "copilot --model $resolved_model $perm_flags --silent --add-dir \$REPO_ROOT -p \"<PROMPT>\"$tee_suffix"
           else
-            echo "copilot --allow-all-tools --allow-all-paths --add-dir \$REPO_ROOT -p \"<PROMPT>\""
+            echo "copilot $perm_flags --silent --add-dir \$REPO_ROOT -p \"<PROMPT>\"$tee_suffix"
           fi
         fi
         ;;
       claude)
         if [ -n "$cmd_prefix" ]; then
           if [ -n "$resolved_model" ]; then
-            echo "$cmd_prefix | claude --dangerously-skip-permissions --model $resolved_model \"<PROMPT>\""
+            echo "$cmd_prefix | claude --print $perm_flags --model $resolved_model \"<PROMPT>\"$tee_suffix"
           else
-            echo "$cmd_prefix | claude --dangerously-skip-permissions \"<PROMPT>\""
+            echo "$cmd_prefix | claude --print $perm_flags \"<PROMPT>\"$tee_suffix"
           fi
         else
           if [ -n "$resolved_model" ]; then
-            echo "claude --dangerously-skip-permissions --model $resolved_model \"<PROMPT>\""
+            echo "claude --print $perm_flags --model $resolved_model \"<PROMPT>\"$tee_suffix"
           else
-            echo "claude --dangerously-skip-permissions \"<PROMPT>\""
+            echo "claude --print $perm_flags \"<PROMPT>\"$tee_suffix"
           fi
         fi
         ;;
       cursor)
         if [ -n "$cmd_prefix" ]; then
           if [ -n "$resolved_model" ]; then
-            echo "$cmd_prefix | cursor-agent --print --force --trust --output-format stream-json --stream-partial-output --model $resolved_model --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'"
+            echo "$cmd_prefix | cursor-agent --print $perm_flags --output-format stream-json --stream-partial-output --model $resolved_model --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'$tee_suffix"
           else
-            echo "$cmd_prefix | cursor-agent --print --force --trust --output-format stream-json --stream-partial-output --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'"
+            echo "$cmd_prefix | cursor-agent --print $perm_flags --output-format stream-json --stream-partial-output --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'$tee_suffix"
           fi
         else
           if [ -n "$resolved_model" ]; then
-            echo "cursor-agent --print --force --trust --output-format stream-json --stream-partial-output --model $resolved_model --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'"
+            echo "cursor-agent --print $perm_flags --output-format stream-json --stream-partial-output --model $resolved_model --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'$tee_suffix"
           else
-            echo "cursor-agent --print --force --trust --output-format stream-json --stream-partial-output --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'"
+            echo "cursor-agent --print $perm_flags --output-format stream-json --stream-partial-output --add-dir \$REPO_ROOT \"<PROMPT>\" | jq -r -j '<stream formatter>'$tee_suffix"
           fi
         fi
         ;;
@@ -361,28 +468,60 @@ run_ai() {
     return 0
   fi
 
+  # Plan mode is structurally read-only — the model cannot call Write/Edit to
+  # save PLANNING.md (or the HTML task file) itself (confirmed by testing: it
+  # can only return the plan as response text). So when plan_mode is on, bash
+  # saves that printed text instead of asking the model to write a file it
+  # has no ability to write. Plain case: streamed straight through `tee`. If
+  # an inline HTML task is also expected (PLANNING_HTML=true), the output is
+  # captured first so write_plan_output can split the HTML block out of it.
+  local cmd=()
   case "$PROVIDER" in
     copilot)
-      if [ -n "$resolved_model" ]; then
-        copilot --model "$resolved_model" --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -i "$input"
+      cmd=(copilot)
+      [ -n "$resolved_model" ] && cmd+=(--model "$resolved_model")
+      cmd+=($perm_flags --silent --add-dir "$REPO_ROOT" -p "$input")
+      if [ "$plan_mode" = true ] && [ "$PLANNING_HTML" = true ]; then
+        local output
+        output=$("${cmd[@]}")
+        echo "$output"
+        write_plan_output "$output"
+      elif [ "$plan_mode" = true ]; then
+        "${cmd[@]}" | tee "$PLANNING"
       else
-        copilot --allow-all-tools --allow-all-paths --add-dir "$REPO_ROOT" -i "$input"
+        "${cmd[@]}"
       fi
       ;;
     claude)
-      if [ -n "$resolved_model" ]; then
-        claude --dangerously-skip-permissions --model "$resolved_model" "$input"
+      cmd=(claude --print)
+      cmd+=($perm_flags)
+      [ -n "$resolved_model" ] && cmd+=(--model "$resolved_model")
+      cmd+=("$input")
+      if [ "$plan_mode" = true ] && [ "$PLANNING_HTML" = true ]; then
+        local output
+        output=$("${cmd[@]}")
+        echo "$output"
+        write_plan_output "$output"
+      elif [ "$plan_mode" = true ]; then
+        "${cmd[@]}" | tee "$PLANNING"
       else
-        claude --dangerously-skip-permissions "$input"
+        "${cmd[@]}"
       fi
       ;;
     cursor)
-      if [ -n "$resolved_model" ]; then
-        cursor-agent --print --force --trust --output-format stream-json --stream-partial-output --model "$resolved_model" --add-dir "$REPO_ROOT" "$input" \
-          | jq -r -j "$(cursor_stream_jq_filter)"
+      cmd=(cursor-agent --print)
+      cmd+=($perm_flags --output-format stream-json --stream-partial-output)
+      [ -n "$resolved_model" ] && cmd+=(--model "$resolved_model")
+      cmd+=(--add-dir "$REPO_ROOT" "$input")
+      if [ "$plan_mode" = true ] && [ "$PLANNING_HTML" = true ]; then
+        local output
+        output=$("${cmd[@]}" | jq -r -j "$(cursor_stream_jq_filter)")
+        echo "$output"
+        write_plan_output "$output"
+      elif [ "$plan_mode" = true ]; then
+        "${cmd[@]}" | jq -r -j "$(cursor_stream_jq_filter)" | tee "$PLANNING"
       else
-        cursor-agent --print --force --trust --output-format stream-json --stream-partial-output --add-dir "$REPO_ROOT" "$input" \
-          | jq -r -j "$(cursor_stream_jq_filter)"
+        "${cmd[@]}" | jq -r -j "$(cursor_stream_jq_filter)"
       fi
       echo ""
       ;;
@@ -597,6 +736,61 @@ $dynamic_cmd_output
   run_ai "$full_prompt" "$model" "$files_display" "$prompt_no_static" "$dynamic_cmds"
 }
 
+# --deep: runs $instruction 3 times in parallel, each restricted to a
+# different review lens, then a final pass that cross-checks all three
+# against the actual diff and only writes findings that survive.
+DEEP_LENSES=(
+  "correctness and bugs"
+  "security vulnerabilities (OWASP top 10, injection, auth, secrets)"
+  "performance, code quality, and adherence to project conventions in docs/"
+)
+
+run_deep_review() {
+  local instruction="$1"
+  local dynamic_context="$2"
+  local model="$3"
+  local dynamic_cmds="$4"
+  shift 4 || true
+
+  local tmp_dir
+  tmp_dir=$(mktemp -d "$AI_PRIVATE_DIR/.deep-review-XXXXXX")
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  echo "Deep review: running ${#DEEP_LENSES[@]} independent lenses in parallel..."
+
+  local pids=()
+  local i=0
+  for lens in "${DEEP_LENSES[@]}"; do
+    i=$((i + 1))
+    (
+      run "$instruction Focus this pass exclusively on: $lens. Do NOT modify, fix, or refactor any source file in this pass, even if the base instruction above says otherwise — report only. Return your findings as your response text only, do not write to REVIEW.md." \
+        "$dynamic_context" "$model" "$dynamic_cmds" "$@" \
+        > "$tmp_dir/lens-$i.md" 2>&1
+    ) &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  echo "Deep review: verifying findings against the diff and merging..."
+
+  local combined=""
+  for f in "$tmp_dir"/lens-*.md; do
+    combined="$combined
+
+### LENS: $(basename "$f")
+$(cat "$f")"
+  done
+
+  run "Below are ${#DEEP_LENSES[@]} independent review passes over the same changes, each from a different angle, run blind to each other. 1) Cross-check every finding against the actual diff/code — discard anything that doesn't hold up on a second look, is speculative, or isn't actually present in the changes. 2) Merge duplicate findings reported by more than one lens into one. 3) Write ONLY the findings that survive this check to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite), grouped by severity, noting which lens(es) originally found each one. Do NOT modify, fix, or refactor any source file in this pass — report only; a plain 'fix' run afterwards is what applies the fixes. $PATH_NOTE" \
+    "$combined" \
+    "$model" \
+    "" \
+    "$@"
+}
+
+dispatch_command() {
 case "$COMMAND" in
   chat)
     run_ai "$PROMPT"
@@ -604,11 +798,20 @@ case "$COMMAND" in
 
   audit)
     require_files "$BUG_HUNTING"
-    run "1) Review the current source-control changes (staged, unstaged, and against master) against the criteria in $AI_PRIVATE_DIR/BUG-HUNTING.md. 2) Identify bugs, inefficiencies, and unclear code introduced by these changes. 3) Avoid modifying or refactoring code external to this branch's changes against master. 5) Write a summary of findings and fixes applied to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite), grouped by severity." \
-      "$(refactor_context)" \
-      "sonnet" \
-      "" \
-      "$BUG_HUNTING"
+    audit_instruction="1) Review the current source-control changes (staged, unstaged, and against master) against the criteria in $AI_PRIVATE_DIR/BUG-HUNTING.md. 2) Identify bugs, inefficiencies, and unclear code introduced by these changes. 3) Avoid modifying or refactoring code external to this branch's changes against master. 5) Write a summary of findings and fixes applied to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite), grouped by severity."
+    if [ "$DEEP" = true ]; then
+      run_deep_review "$audit_instruction" \
+        "$(refactor_context)" \
+        "sonnet" \
+        "" \
+        "$BUG_HUNTING"
+    else
+      run "$audit_instruction" \
+        "$(refactor_context)" \
+        "sonnet" \
+        "" \
+        "$BUG_HUNTING"
+    fi
     ;;
 
   debug)
@@ -645,16 +848,25 @@ case "$COMMAND" in
 
   review)
     require_files "$BASE" "$REVIEW"
-    run "1) Review changed files against master. 2) Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. 3) Follow project conventions in $REPO_ROOT/docs and keep in mind $AI_PRIVATE_DIR/LEARNED.md doc about old reviews.  4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
-      "$(review_context)" \
-      "" \
-      "" \
-      "$BASE" "$REVIEW"
+    review_instruction="1) Review changed files against master. 2) Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns.$(skill_hint 'Use the security-review skill for the security-concerns dimension.') 3) Follow project conventions in $REPO_ROOT/docs and keep in mind $AI_PRIVATE_DIR/LEARNED.md doc about old reviews.  4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files."
+    if [ "$DEEP" = true ]; then
+      run_deep_review "$review_instruction" \
+        "$(review_context)" \
+        "" \
+        "" \
+        "$BASE" "$REVIEW"
+    else
+      run "$review_instruction" \
+        "$(review_context)" \
+        "" \
+        "" \
+        "$BASE" "$REVIEW"
+    fi
     ;;
 
   planning)
     require_files "$BASE" "$PLANNING"
-    run "1) Create an implementation plan from the custom prompt. 2) Do NOT modify source files. 3) Output: a) Architecture overview, b) Files to create/modify, c) Risks and mitigations, d) Implementation order, e) Test strategy. 4) Write the plan to $AI_PRIVATE_DIR/PLANNING.md. 5) $(html_task_instruction) $PATH_NOTE" \
+    run "1) Create an implementation plan from the custom prompt. 2) This is a read-only planning pass — you have no access to write files or run mutating tools, so don't attempt to; just present the complete plan directly in your response, it will be saved automatically. 3) Output: a) Architecture overview, b) Files to create/modify, c) Risks and mitigations, d) Implementation order, e) Test strategy.$(html_task_instruction_inline)" \
       "$(planning_context)" \
       "opus" \
       "" \
@@ -730,7 +942,7 @@ $pr_info" \
 
   playwright)
     require_files "$BASE"
-    run "1) Analyze the Playwright E2E test output to identify failures introduced by this branch. 2) Compare changed files against master to determine if failures are related to branch changes. 3) For each failure: identify root cause, affected component, and suggest a fix. 4) If mocks are stale or API responses changed, note which HAR files need updating. 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md with actionable fixes grouped by severity. $PATH_NOTE" \
+    run "1) Analyze the Playwright E2E test output to identify failures introduced by this branch. 2) Compare changed files against master to determine if failures are related to branch changes. 3) For each failure: identify root cause, affected component, and suggest a fix. 4) If mocks are stale or API responses changed, note which HAR files need updating.$(skill_hint 'Use the update-playwright-mocks skill to actually update them, one test at a time.') 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md with actionable fixes grouped by severity. $PATH_NOTE" \
       "$(playwright_context)" \
       "sonnet" \
       "npm run playwright 2>&1 || true" \
@@ -751,3 +963,24 @@ $pr_info" \
     exit 1
     ;;
 esac
+}
+
+if [ "${#CHAIN_STEPS[@]}" -gt 0 ]; then
+  total="${#CHAIN_STEPS[@]}"
+  for i in "${!CHAIN_STEPS[@]}"; do
+    COMMAND="${CHAIN_STEPS[$i]}"
+    echo ""
+    echo "▶ Chain step $((i + 1))/$total: $COMMAND"
+    dispatch_command
+    is_last=$([ "$((i + 1))" -eq "$total" ] && echo true || echo false)
+    if [ "$CHAIN_YES" != true ] && [ "$is_last" != true ] && [ "$DRY_RUN" = false ]; then
+      read -r -p "Continue to next step ($((i + 2))/$total: ${CHAIN_STEPS[$((i + 1))]})? [y/N] " reply
+      if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+        echo "Chain stopped by user after '$COMMAND'."
+        exit 0
+      fi
+    fi
+  done
+else
+  dispatch_command
+fi
