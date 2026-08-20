@@ -210,6 +210,7 @@ REFACTOR="$AI_PRIVATE_DIR/REFACTOR.md"
 REVIEW="$AI_PRIVATE_DIR/REVIEW.md"
 PLANNING="$AI_PRIVATE_DIR/PLANNING.md"
 BUG_HUNTING="$AI_PRIVATE_DIR/BUG-HUNTING.md"
+LEARNED="$AI_PRIVATE_DIR/LEARNED.md"
 
 require_files() {
   for file in "$@"; do
@@ -223,6 +224,7 @@ existing_files() {
   for file in "$@"; do
     [ -f "$file" ] && echo "$file"
   done
+  return 0
 }
 
 # Reusable instruction for HTML task visualization
@@ -418,6 +420,194 @@ $(git diff --name-only master...HEAD 2>/dev/null || true)
 EOF
 }
 
+# --- Project conventions context (docs/, .claude/rules/) -------------------
+#
+# CLAUDE.md and .claude/rules/*.md use bare "@relative/path" lines as Claude
+# Code's own transclusion syntax. Only the `claude` provider's own process
+# resolves those automatically when it re-reads CLAUDE.md from $REPO_ROOT;
+# copilot/cursor just see the literal "@docs/..." text. These functions
+# resolve the imports in bash so every provider gets the real doc content.
+
+# Absolute-ish path used as a dedupe key so the same doc is never printed
+# twice in one generate_docs_context call (e.g. reached once via CLAUDE.md's
+# own @-list and again via a .claude/rules/*.md that points at the same file).
+_canon_path() {
+  local f="$1"
+  echo "$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)/$(basename "$f")"
+}
+
+_already_resolved() {
+  case $'\n'"$_RESOLVED_PATHS"$'\n' in
+    *$'\n'"$1"$'\n'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Recursively expands "@relative/path" lines into the referenced file's
+# content. Non-"@" lines pass through unchanged. Skips a file already
+# resolved earlier in the same generate_docs_context call (see _RESOLVED_PATHS).
+resolve_at_imports() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+
+  local abs
+  abs=$(_canon_path "$file")
+  _already_resolved "$abs" && return 0
+  _RESOLVED_PATHS="$_RESOLVED_PATHS
+$abs"
+
+  local base_dir
+  base_dir=$(dirname "$file")
+
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^@(.+)$ ]]; then
+      local ref="${BASH_REMATCH[1]}"
+      local ref_path="$base_dir/$ref"
+      # Tolerate a stale "@dir/file.md" reference left over from moving a doc
+      # into "dir/file/" (e.g. CLAUDE.md's "@docs/testing/jest.md" — the real
+      # file is docs/testing/jest/index.md now, in a dir named without ".md").
+      if [ ! -f "$ref_path" ] && [ -f "${ref_path%.md}/index.md" ]; then
+        ref_path="${ref_path%.md}/index.md"
+      fi
+      if [ -f "$ref_path" ]; then
+        resolve_at_imports "$ref_path"
+        echo ""
+      else
+        echo "$line"
+      fi
+    else
+      echo "$line"
+    fi
+  done < "$file"
+}
+
+# Full expansion of CLAUDE.md -> AGENTS.md + every docs/*.md it references,
+# PLUS every doc referenced by a .claude/rules/*.md rule (react-query.md,
+# css-modules.md, the style variant of feature-flags.md, jest topic guides —
+# these are normally path-triggered, not part of CLAUDE.md's own @-list, but
+# there's no diff to trigger them off here). For commands with no reliable
+# branch diff to scope against (feature: new work not yet reflected in a
+# diff; explain/planning: may need any part of the repo).
+full_docs_context() {
+  resolve_at_imports "$BASE"
+
+  local rules_dir="$REPO_ROOT/.claude/rules"
+  [ -d "$rules_dir" ] || return 0
+
+  local rule_file
+  for rule_file in "$rules_dir"/*.md; do
+    [ -f "$rule_file" ] || continue
+
+    local ref
+    ref=$(grep -m1 -E '^@' "$rule_file" 2>/dev/null || true)
+    [ -n "$ref" ] || continue
+
+    local ref_path="$rules_dir/${ref#@}"
+    [ -f "$ref_path" ] || continue
+
+    local abs
+    abs=$(_canon_path "$ref_path")
+    _already_resolved "$abs" && continue
+
+    echo "### $(basename "$ref_path")"
+    resolve_at_imports "$ref_path"
+    echo ""
+  done
+}
+
+# Cross-references files touched on this branch against each rule's `paths:`
+# glob list in .claude/rules/*.md, and includes only the docs whose rule
+# matched — mirrors Claude Code's own path-triggered rule loading, made
+# explicit so copilot/cursor get the same targeted guidance without paying
+# for the full docs/ corpus on every call.
+smart_docs_context() {
+  echo "### AGENTS.md"
+  cat "$REPO_ROOT/AGENTS.md" 2>/dev/null || true
+  echo ""
+
+  local rules_dir="$REPO_ROOT/.claude/rules"
+  [ -d "$rules_dir" ] || return 0
+
+  local changed_files
+  changed_files="$(git diff --name-only master...HEAD 2>/dev/null || true)
+$(git diff --name-only 2>/dev/null || true)
+$(git diff --cached --name-only 2>/dev/null || true)"
+
+  [ -n "${changed_files//[$'\n' ]/}" ] || return 0
+
+  # NOTE: no `globstar` — macOS ships bash 3.2 (no globstar support), and it's
+  # not needed anyway: `[[ str == pattern ]]` isn't pathname expansion, so a
+  # bare `*` already matches "/" without it.
+  shopt -s extglob nullglob
+
+  local rule_file
+  for rule_file in "$rules_dir"/*.md; do
+    [ -f "$rule_file" ] || continue
+
+    local globs
+    globs=$(sed -n '/^paths:/,/^---/p' "$rule_file" 2>/dev/null \
+      | grep -E '^[[:space:]]*-[[:space:]]' \
+      | sed -E "s/^[[:space:]]*-[[:space:]]*['\"]?//; s/['\"]?[[:space:]]*\$//" || true)
+
+    local matched=false
+    local glob f
+    while IFS= read -r glob; do
+      [ -n "$glob" ] || continue
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        # shellcheck disable=SC2053 -- intentional: $glob must stay unquoted
+        # so it's matched as a pattern, not compared as a literal string.
+        if [[ "$f" == $glob ]]; then
+          matched=true
+          break
+        fi
+      done <<< "$changed_files"
+      [ "$matched" = true ] && break
+    done <<< "$globs"
+
+    if [ "$matched" = true ]; then
+      local ref
+      ref=$(grep -m1 -E '^@' "$rule_file" 2>/dev/null || true)
+      if [ -n "$ref" ]; then
+        local ref_path="$rules_dir/${ref#@}"
+        if [ -f "$ref_path" ]; then
+          echo "### $(basename "$ref_path")"
+          resolve_at_imports "$ref_path"
+          echo ""
+        fi
+      fi
+    fi
+  done
+}
+
+# Writes the resolved conventions (mode: "full" or "smart") to a generated
+# file under .ai-private/ and echoes its path, so it flows through the
+# existing file-based static-context mechanism in run(). PID-suffixed so two
+# concurrent ai-cli invocations can't clobber each other's file mid-read;
+# the ".generated-docs-context.md" mirror alongside it is just a fixed-name
+# copy for manual inspection (e.g. opening it in an editor) and isn't read
+# by run() itself.
+generate_docs_context() {
+  local mode="$1"
+  local out_file="$AI_PRIVATE_DIR/.generated-docs-context.$$.md"
+  _RESOLVED_PATHS=""
+
+  {
+    echo "### PROJECT CONVENTIONS (auto-generated, do not edit)"
+    echo ""
+    if [ "$mode" = "full" ]; then
+      full_docs_context
+    else
+      smart_docs_context
+    fi
+  } > "$out_file"
+
+  cp "$out_file" "$AI_PRIVATE_DIR/.generated-docs-context.md" 2>/dev/null || true
+
+  echo "$out_file"
+}
+
 review_context() {
   cat <<EOF
 
@@ -543,8 +733,7 @@ run() {
   files=$(existing_files "$@")
 
   if [ -z "$files" ]; then
-    echo "Error: No valid context files found"
-    exit 1
+    echo "Warning: No context files found (proceeding without them)"
   fi
 
   # Execute dynamic commands and capture output into context (live mode only)
@@ -565,8 +754,18 @@ $dynamic_cmd_output
   local files_display
   files_display=$(echo "$files" | sed "s|$REPO_ROOT/||g" | tr '\n' ' ')
 
-  local static_context
-  static_context="$(cat $files 2>/dev/null || true)"
+  # Split $files (newline-separated) into an array so a path containing a
+  # space still works — a bare "cat $files" word-splits on whitespace and
+  # silently drops/mismatches any such path, masked by the "|| true" below.
+  local files_arr=()
+  while IFS= read -r f; do
+    [ -n "$f" ] && files_arr+=("$f")
+  done <<< "$files"
+
+  local static_context=""
+  if [ "${#files_arr[@]}" -gt 0 ]; then
+    static_context="$(cat "${files_arr[@]}" 2>/dev/null || true)"
+  fi
 
   local full_prompt="
   ### TASK
@@ -604,70 +803,72 @@ case "$COMMAND" in
 
   audit)
     require_files "$BUG_HUNTING"
-    run "1) Review the current source-control changes (staged, unstaged, and against master) against the criteria in $AI_PRIVATE_DIR/BUG-HUNTING.md. 2) Identify bugs, inefficiencies, and unclear code introduced by these changes. 3) Avoid modifying or refactoring code external to this branch's changes against master. 5) Write a summary of findings and fixes applied to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite), grouped by severity." \
+    DOCS_FILE=$(generate_docs_context smart)
+    run "1) Review the current source-control changes (staged, unstaged, and against master) against the criteria in $AI_PRIVATE_DIR/BUG-HUNTING.md and the project conventions included above. 2) Identify bugs, inefficiencies, and unclear code introduced by these changes. 3) Avoid modifying or refactoring code external to this branch's changes against master. 5) Write a summary of findings and fixes applied to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite), grouped by severity." \
       "$(refactor_context)" \
       "sonnet" \
       "" \
-      "$BUG_HUNTING"
+      "$BUG_HUNTING" "$DOCS_FILE"
     ;;
 
   debug)
-    require_files "$BASE" "$DEBUG"
+    require_files "$DEBUG"
+    DOCS_FILE=$(generate_docs_context smart)
     run "1) Root cause analysis, 2) Minimal reproduction steps, 3) Smallest safe fix with code changes, 4) Regression tests to prevent recurrence, 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
       "$(debug_context)" \
       "opus" \
       "" \
-      "$BASE" "$DEBUG"
+      "$DEBUG" "$DOCS_FILE"
     ;;
 
   feature)
-    if [ ! -f "$PLANNING" ]; then
-      echo "Error: $PLANNING not found."
-      echo "Create it with your feature description. Note: this command now uses PLANNING.md (previously FEATURE.md)."
-      exit 1
-    fi
-    require_files "$BASE"
-    run "1) Implement the feature specified in $AI_PRIVATE_DIR/PLANNING.md. 2) Follow project conventions in $REPO_ROOT/docs. 3) Write clean, tested code matching existing patterns. 4) Create or update unit tests. $PATH_NOTE" \
+    require_files "$PLANNING"
+    DOCS_FILE=$(generate_docs_context full)
+    run "1) Implement the feature specified in $AI_PRIVATE_DIR/PLANNING.md. 2) Follow the project conventions included above under PROJECT CONVENTIONS. 3) Write clean, tested code matching existing patterns. 4) Create or update unit tests. $PATH_NOTE" \
       "$(feature_context)" \
       "" \
       "" \
-      "$BASE" "$PLANNING"
+      "$PLANNING" "$DOCS_FILE"
     ;;
 
   refactor)
-    require_files "$BASE" "$REVIEW"
-    run "1) Apply the refactoring described in $AI_PRIVATE_DIR/REVIEW.md. 2) Preserve existing behavior while improving code quality. 3) Follow project conventions in $REPO_ROOT/docs. 4) Ensure all tests pass. 5) Create a refactoring summary inside $AI_PRIVATE_DIR/REFACTOR.md (if exists, overwrite). $PATH_NOTE" \
+    require_files "$REVIEW"
+    DOCS_FILE=$(generate_docs_context smart)
+    run "1) Apply the refactoring described in $AI_PRIVATE_DIR/REVIEW.md. 2) Preserve existing behavior while improving code quality. 3) Follow the project conventions included above under PROJECT CONVENTIONS. 4) Ensure all tests pass. 5) Create a refactoring summary inside $AI_PRIVATE_DIR/REFACTOR.md (if exists, overwrite). $PATH_NOTE" \
       "$(refactor_context)" \
       "" \
       "" \
-      "$BASE" "$REVIEW"
+      "$REVIEW" "$DOCS_FILE"
     ;;
 
   review)
-    require_files "$BASE" "$REVIEW"
-    run "1) Review changed files against master. 2) Check for: bugs, style violations (per docs/), missing tests, performance issues, security concerns. 3) Follow project conventions in $REPO_ROOT/docs and keep in mind $AI_PRIVATE_DIR/LEARNED.md doc about old reviews.  4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
+    require_files "$REVIEW" "$LEARNED"
+    DOCS_FILE=$(generate_docs_context smart)
+    run "1) Review changed files against master. 2) Check for: bugs, style violations, missing tests, performance issues, security concerns — per the project conventions included above under PROJECT CONVENTIONS. 3) Keep in mind $AI_PRIVATE_DIR/LEARNED.md (included above) about old reviews. 4) Write findings to $AI_PRIVATE_DIR/REVIEW.md (if exists, overwrite) with actionable suggestions grouped by severity. 5) $(html_task_instruction) $PATH_NOTE. 6) Do NOT modify source files." \
       "$(review_context)" \
       "" \
       "" \
-      "$BASE" "$REVIEW"
+      "$REVIEW" "$LEARNED" "$DOCS_FILE"
     ;;
 
   planning)
-    require_files "$BASE" "$PLANNING"
-    run "1) Create an implementation plan from the custom prompt. 2) Do NOT modify source files. 3) Output: a) Architecture overview, b) Files to create/modify, c) Risks and mitigations, d) Implementation order, e) Test strategy. 4) Write the plan to $AI_PRIVATE_DIR/PLANNING.md. 5) $(html_task_instruction) $PATH_NOTE" \
+    require_files "$PLANNING"
+    DOCS_FILE=$(generate_docs_context full)
+    run "1) Create an implementation plan from the custom prompt, following the project conventions included above under PROJECT CONVENTIONS. 2) Do NOT modify source files. 3) Output: a) Architecture overview, b) Files to create/modify, c) Risks and mitigations, d) Implementation order, e) Test strategy. 4) Write the plan to $AI_PRIVATE_DIR/PLANNING.md. 5) $(html_task_instruction) $PATH_NOTE" \
       "$(planning_context)" \
       "opus" \
       "" \
-      "$BASE" "$PLANNING"
+      "$PLANNING" "$DOCS_FILE"
     ;;
 
   fix)
-    require_files "$BASE" "$REVIEW"
-    run "1) Fix the bugs and improvements from $AI_PRIVATE_DIR/REVIEW.md. 2) Follow project conventions in $REPO_ROOT/docs. 3) Avoid modifying or refactoring code external to this branch changes against master." \
+    require_files "$REVIEW"
+    DOCS_FILE=$(generate_docs_context smart)
+    run "1) Fix the bugs and improvements from $AI_PRIVATE_DIR/REVIEW.md. 2) Follow the project conventions included above under PROJECT CONVENTIONS. 3) Avoid modifying or refactoring code external to this branch changes against master." \
       "$(review_context)" \
       "sonnet" \
       "" \
-      "$BASE" "$REVIEW"
+      "$REVIEW" "$DOCS_FILE"
     ;;
 
   suggestions)
@@ -684,21 +885,32 @@ $pr_info" \
     ;;
 
   commit)
-    require_files "$BASE"
-    run "1) Generate a concise, semantic commit message for the staged changes. 2) Format: <type>(<scope>): <description>. 3) Types: feat, fix, refactor, docs, test, chore. 4) Return ONLY the commit message, nothing else." \
-      "$(git diff --cached)" \
+    GIT_DOC="$REPO_ROOT/docs/workflow/git.md"
+    require_files "$GIT_DOC"
+    run "1) Generate a commit message for the staged changes, following the convention in docs/workflow/git.md included above: format \`[TICKET-ID] type: description\`, imperative mood, under 80 characters, types feat/fix/refactor/docs/test/chore, no Co-Authored-By trailer. 2) Extract the ticket ID from the branch name given in the context below. 3) Return ONLY the commit message, nothing else." \
+      "$(cat <<EOF
+
+### BRANCH
+$(git branch --show-current 2>/dev/null || true)
+
+### STAGED DIFF
+$(git diff --cached 2>/dev/null || true)
+
+EOF
+)" \
       "sonnet" \
       "" \
-      "$BASE"
+      "$GIT_DOC"
     ;;
 
   pr)
-    require_files "$BASE"
-    run "1) Generate a PR description for the changes in this branch against master. 2) Include: Summary, Changes made, Testing done. 3) Use markdown formatting." \
+    PR_DOC="$REPO_ROOT/.github/PULL_REQUEST_TEMPLATE.md"
+    require_files "$PR_DOC"
+    run "1) Generate a PR description for the changes in this branch against master, following the structure of .github/PULL_REQUEST_TEMPLATE.md included above (Jira Link, What is changing?, How is this tested?, OWASP Top 10 Checklist). 2) Extract the ticket ID from the branch name (in the context below) for the Jira Link section. 3) Use markdown formatting." \
       "$(review_context)" \
       "sonnet" \
       "" \
-      "$BASE"
+      "$PR_DOC"
     ;;
 
   test)
@@ -711,39 +923,39 @@ $pr_info" \
     ;;
 
   types)
-    require_files "$BASE"
-    run "1) Fix TypeScript errors in the changed files. 2) Do not use 'any' - use \$TSFixMe with a comment if truly unavoidable. 3) Follow project conventions." \
+    DOCS_FILE=$(generate_docs_context smart)
+    run "1) Fix TypeScript errors in the changed files. 2) Do not use 'any' - use \$TSFixMe with a comment if truly unavoidable. 3) Follow the project conventions included above under PROJECT CONVENTIONS." \
       "$(review_context)" \
       "sonnet" \
       "" \
-      "$BASE"
+      "$DOCS_FILE"
     ;;
 
   lint)
-    require_files "$BASE"
-    run "1) Analyze the lint output and fix ESLint and Prettier issues in the changed files. 2) Follow project style conventions." \
+    DOCS_FILE=$(generate_docs_context smart)
+    run "1) Analyze the lint output and fix ESLint and Prettier issues in the changed files. 2) Follow the project conventions included above under PROJECT CONVENTIONS." \
       "$(review_context)" \
       "sonnet" \
       "npm run check 2>&1 || true" \
-      "$BASE"
+      "$DOCS_FILE"
     ;;
 
   playwright)
-    require_files "$BASE"
+    DOCS_FILE=$(generate_docs_context smart)
     run "1) Analyze the Playwright E2E test output to identify failures introduced by this branch. 2) Compare changed files against master to determine if failures are related to branch changes. 3) For each failure: identify root cause, affected component, and suggest a fix. 4) If mocks are stale or API responses changed, note which HAR files need updating. 5) Write findings to $AI_PRIVATE_DIR/REVIEW.md with actionable fixes grouped by severity. $PATH_NOTE" \
       "$(playwright_context)" \
       "sonnet" \
       "npm run playwright 2>&1 || true" \
-      "$BASE"
+      "$DOCS_FILE"
     ;;
 
   explain)
-    require_files "$BASE"
+    DOCS_FILE=$(generate_docs_context full)
     run "1) Explain the code, architecture, or pattern. 2) Be concise but thorough. 3) Include relevant file references." \
       "$(feature_context)" \
       "opus" \
       "" \
-      "$BASE"
+      "$DOCS_FILE"
     ;;
 
   *)
