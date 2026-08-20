@@ -104,7 +104,7 @@ usage() {
   echo "Options:"
   echo "  --dry-run, -d        Show the generated prompt without executing"
   echo "  --model, -m          Override the default model (e.g., --model haiku)"
-  echo "  --planning, -p       Generate planning HTML visualization (default: true)"
+  echo "  --planning, -p       Generate planning HTML visualization (default: false)"
   echo ""
   echo "Flags can appear before or after the provider:"
   echo "  ai-cli --model haiku claude review \"...\""
@@ -131,9 +131,8 @@ while true; do
       shift || true
       ;;
     --planning|-p)
+      PLANNING_HTML=true
       shift
-      PLANNING_HTML="${1:-true}"
-      shift || true
       ;;
     *)
       break
@@ -157,9 +156,8 @@ while true; do
       shift || true
       ;;
     --planning|-p)
+      PLANNING_HTML=true
       shift
-      PLANNING_HTML="${1:-false}"
-      shift || true
       ;;
     *)
       break
