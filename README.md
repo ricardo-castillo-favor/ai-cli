@@ -15,19 +15,17 @@ Think of it as a **context orchestrator** — it knows what information each typ
 ## Why Use AI-CLI?
 
 | Benefit                         | Description                                                                            |
-| ------------------------------- | -------------------------------------------------------------------------------------- |
-| **Structured Workflows**        | 15 pre-built commands (plus `chain` to compose them) across the full development lifecycle |
-| **Automatic Context Injection** | Automatically gathers git status, recent commits, changed files, and project structure |
-| **Token Efficiency**            | Sends only relevant context per task type, avoiding unnecessary token consumption      |
-| **Provider Agnostic**           | Switch between Claude, Copilot, and Cursor with a single word                          |
-| **Persistent Documentation**    | Generates structured markdown files and interactive HTML task plans in `.ai-private/`  |
-| **Dry-Run Mode**                | Preview the exact prompt and command before execution                                  |
-| **Model Override**              | Override the default model per-run with `--model`                                      |
-| **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                     |
-| **Command Chaining**            | Run several commands back to back with `chain`, sharing the same prompt and file handoff |
-| **Deep Review Mode**            | `--deep` runs `review`/`audit` as 3 parallel lenses plus a verification pass            |
-| **True Read-Only Commands**     | `planning`, `review`, `audit`, `debug`, `playwright`, `explain` run in each provider's real plan mode — they cannot edit files even if they try |
-| **Base Branch Detection**       | Diffs against the repo's actual default branch (`origin/HEAD`, or a local `main`/`master`), not a hardcoded `master` |
+| ------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Structured Workflows**        | 15 pre-built commands across the full development lifecycle                              |
+| **Automatic Context Injection** | Automatically gathers git status, recent commits, changed files, and project structure   |
+| **Project Conventions Context** | Auto-resolves `@relative/path` imports from `CLAUDE.md`/`AGENTS.md` and `.claude/rules/*.md`, so every provider — not just Claude Code — gets the same conventions |
+| **Token Efficiency**            | Sends only relevant context per task type, avoiding unnecessary token consumption         |
+| **Provider Agnostic**           | Switch between Claude, Copilot, and Cursor with a single word                            |
+| **Persistent Documentation**    | Generates structured markdown files and interactive HTML task plans in `.ai-private/`    |
+| **Dry-Run Mode**                | Preview the exact prompt and command before execution                                    |
+| **Model Override**              | Override the default model per-run with `--model`                                        |
+| **Optional Planning HTML**      | Opt in to an interactive HTML task visualization with `--planning`                        |
+| **Ticket-Aware Commit & PR**    | `commit`/`pr` extract the ticket ID from the branch name and follow your team's own commit/PR templates |
 
 ---
 
@@ -82,7 +80,8 @@ AI-CLI does not source any env file itself — each provider CLI (`claude`, `cop
 In your project's root directory:
 
 ```bash
-# Required: base context file read by all commands
+# Optional: base context file read directly by `suggestions` and `test`, and
+# resolved (with its @imports) by `feature`, `planning`, and `explain`
 touch CLAUDE.md
 
 # Optional: private context files (add .ai-private/ to .gitignore)
@@ -93,20 +92,30 @@ touch .ai-private/REVIEW.md       # review output and fix suggestions
 touch .ai-private/REFACTOR.md     # refactoring summaries
 touch .ai-private/BUG-HUNTING.md  # criteria/checklist used by the audit command
 
+# Optional: for commit/pr's ticket-aware templates
+mkdir -p docs/workflow .github
+touch docs/workflow/git.md              # commit message convention (read by `commit`)
+touch .github/PULL_REQUEST_TEMPLATE.md  # PR description template (read by `pr`)
+
 echo ".ai-private/" >> .gitignore
 ```
 
 **File purposes:**
 
-| File                         | Purpose                                                                                                             |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE.md`                  | Project-wide instructions, conventions, and context for AI                                                          |
-| `.ai-private/PLANNING.md`    | Feature specs and implementation plans (read by `feature`, written by `planning`)                                   |
-| `.ai-private/DEBUG.md`       | Bug descriptions and reproduction steps (read by `debug`)                                                           |
-| `.ai-private/REVIEW.md`      | Review output and fix suggestions (written by `review`, `debug`, `audit`, `suggestions`; read by `fix`, `refactor`) |
-| `.ai-private/REFACTOR.md`    | Refactoring summaries (written by `refactor`)                                                                       |
-| `.ai-private/BUG-HUNTING.md` | Bug-hunting criteria/checklist for the branch's changes (read by `audit`)                                           |
-| `.ai-private/tasks/`         | Interactive HTML plans (written by `debug`, `review`, `planning` when `--planning` is enabled)                      |
+| File                                    | Purpose                                                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE.md`                              | Project-wide instructions and conventions; read directly by `suggestions`/`test`, resolved (with `@imports`) by `feature`/`planning`/`explain` |
+| `AGENTS.md`                              | Read directly by `audit`, `debug`, `refactor`, `review`, `fix`, `types`, `lint`, `playwright` (their "smart" docs context) |
+| `.claude/rules/*.md`                     | Path-triggered convention docs; matched against this branch's changed files (smart mode) or included in full (full mode) |
+| `docs/workflow/git.md`                   | Commit message convention (read by `commit`)                                                                         |
+| `.github/PULL_REQUEST_TEMPLATE.md`       | PR description template (read by `pr`)                                                                              |
+| `.ai-private/PLANNING.md`                | Feature specs and implementation plans (read by `feature`, written by `planning`)                                    |
+| `.ai-private/DEBUG.md`                   | Bug descriptions and reproduction steps (read by `debug`)                                                            |
+| `.ai-private/REVIEW.md`                  | Review output and fix suggestions (written by `review`, `debug`, `audit`, `suggestions`; read by `fix`, `refactor`)  |
+| `.ai-private/REFACTOR.md`                | Refactoring summaries (written by `refactor`)                                                                       |
+| `.ai-private/BUG-HUNTING.md`             | Bug-hunting criteria/checklist for the branch's changes (read by `audit`)                                            |
+| `.ai-private/tasks/`                     | Interactive HTML plans (written by `debug`, `review`, `planning` when `--planning` is enabled)                       |
+| `.ai-private/.generated-docs-context.md` | Auto-generated mirror of the last resolved project-conventions context — for manual inspection only, not read by `ai-cli` itself |
 
 ---
 
@@ -122,13 +131,11 @@ ai-cli [flags] <provider> [flags] <command> "your request"
 
 ### Flags
 
-| Flag             | Short | Description                                                                                                          |
-| ---------------- | ----- | --------------------------------------------------------------------------------------------------------------------- |
-| `--dry-run`      | `-d`  | Show the generated prompt and provider command without executing                                                    |
-| `--model <name>` | `-m`  | Override the default model for this run                                                                             |
-| `--planning`     | `-p`  | Plain switch — generate the interactive HTML task visualization for commands that support it (off by default)      |
-| `--yes`          | `-y`  | `chain` only — run every step without pausing to confirm between steps                                              |
-| `--deep`         |       | `review`/`audit` only — run 3 parallel review lenses plus a verification pass (see [Deep Review](#deep-review-mode))|
+| Flag             | Short | Description                                                        |
+| ---------------- | ----- | --------------------------------------------------------------------- |
+| `--dry-run`      | `-d`  | Show the generated prompt and provider command without executing   |
+| `--model <name>` | `-m`  | Override the default model for this run                            |
+| `--planning`     | `-p`  | Plain switch — generate the interactive HTML task visualization for commands that support it (off by default) |
 
 Flags can appear **before or after the provider, but not after the command**:
 
@@ -149,59 +156,37 @@ ai-cli claude --planning planning "design a caching layer"
 
 ### `audit` — Bug-hunt the branch's changes
 
-Reviews the current source-control changes (staged, unstaged, and against the repo's default branch) against the criteria in `BUG-HUNTING.md`, looking specifically for bugs, inefficiencies, and unclear code introduced by this branch. Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
+Reviews the current source-control changes (staged, unstaged, and against `master`) against the criteria in `BUG-HUNTING.md` and the resolved project conventions, looking specifically for bugs, inefficiencies, and unclear code introduced by this branch. Writes findings to `REVIEW.md`.
 
 ```bash
 ai-cli claude audit "focus on the payment retry logic"
-
-# Higher-precision pass: 3 parallel lenses + a verification pass (see Deep Review Mode below)
-ai-cli claude --deep audit "focus on the payment retry logic"
 ```
 
-- **Context:** branch, status, commits, staged files, unstaged files, changed files vs the default branch
+- **Context:** branch, status, commits, staged files, unstaged files, changed files vs `master`
 - **Model:** sonnet
-- **Reads:** `.ai-private/BUG-HUNTING.md`
+- **Reads:** `.ai-private/BUG-HUNTING.md`, project conventions (smart mode)
 - **Output:** `.ai-private/REVIEW.md` (overwritten), findings grouped by severity
-- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify files even if instructed to
-- **Supports `--deep`** (see [Deep Review Mode](#deep-review-mode))
-
----
-
-### `chain` — Run multiple commands back to back
-
-Runs a sequence of known commands one after another, sharing the same prompt and the same file handoff (`PLANNING.md`, `REVIEW.md`, ...) each step already reads/writes. Needs at least 2 steps, separated from the shared prompt by a literal `--` (mandatory, so a prompt that happens to start with a command name like "fix the login bug" isn't misread as an extra step).
-
-Pauses for confirmation between steps unless `--yes`/`-y` is set. Stops immediately if a step fails.
-
-```bash
-ai-cli claude chain planning feature review -- "add rate limiting to the login endpoint"
-ai-cli claude --yes chain audit fix -- "clean up the payment retry logic"
-```
-
-- Each step uses that command's own default model, context, and output files — `chain` is just an orchestrator around `dispatch_command()`, not a separate workflow
-- `--dry-run` shows the generated prompt/command for every step without running any of them
-- `--yes`/`-y` and `--deep` apply to the whole chain (e.g. `--deep` makes every `review`/`audit` step in the chain run deep)
 
 ---
 
 ### `commit` — Generate a commit message
 
-Analyzes staged changes and generates a semantic commit message.
+Analyzes the staged diff and generates a commit message following your team's convention, extracting the ticket ID from the current branch name.
 
 ```bash
 ai-cli claude commit "focus on the auth changes"
 ```
 
-- **Context:** `git diff --cached` (staged diff)
+- **Context:** branch name, `git diff --cached` (staged diff)
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`
-- **Output:** Commit message printed to terminal
+- **Reads:** `docs/workflow/git.md`
+- **Output:** Commit message printed to terminal — format `[TICKET-ID] type: description`, imperative mood, under 80 characters, no `Co-Authored-By` trailer
 
 ---
 
 ### `debug` — Root cause analysis
 
-Analyzes the bug described in `DEBUG.md`, traces the root cause, and proposes the smallest safe fix (as a diff/snippet in its response). Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
+Analyzes the bug described in `DEBUG.md`, traces the root cause, and proposes the smallest safe fix. Writes findings to `REVIEW.md`; explicitly instructed not to modify source files.
 
 ```bash
 # Uses opus by default (most capable — see note on cost below)
@@ -213,9 +198,8 @@ ai-cli claude --model sonnet debug "..."
 
 - **Context:** branch, status, commits, changed files, diff stats, `package.json` scripts
 - **Model:** **opus** (override with `--model sonnet` to reduce cost)
-- **Reads:** `CLAUDE.md`, `.ai-private/DEBUG.md`
-- **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/debug-{timestamp}.html`
-- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
+- **Reads:** `.ai-private/DEBUG.md`, project conventions (smart mode)
+- **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/debug-{timestamp}.html` (only with `--planning`)
 
 ---
 
@@ -230,15 +214,14 @@ ai-cli copilot explain "what is the data flow in the checkout process?"
 
 - **Context:** branch, status, commits, changed files, relevant file tree (depth 3)
 - **Model:** **opus**
-- **Reads:** `CLAUDE.md`
+- **Reads:** project conventions (full mode — `CLAUDE.md` and every `.claude/rules/*.md` doc)
 - **Output:** Explanation printed to terminal
-- **Structurally read-only** — runs in the provider's real plan mode (no output file to auto-save; nothing to save for a pure explanation)
 
 ---
 
 ### `feature` — Implement a feature
 
-Implements the feature described in `.ai-private/PLANNING.md`. Fails immediately if `PLANNING.md` does not exist.
+Implements the feature described in `.ai-private/PLANNING.md`.
 
 ```bash
 # First, describe what to build in .ai-private/PLANNING.md
@@ -247,22 +230,22 @@ ai-cli claude feature "implement the user auth flow"
 
 - **Context:** branch, status, commits, changed files, relevant file tree (depth 3)
 - **Model:** sonnet (default)
-- **Reads:** `CLAUDE.md`, `.ai-private/PLANNING.md` **(required)**
+- **Reads:** `.ai-private/PLANNING.md` **(required)**, project conventions (full mode)
 - **Output:** Source file changes
 
 ---
 
 ### `fix` — Apply fixes from a review
 
-Applies the bugs and improvements listed in `.ai-private/REVIEW.md`. Only touches files changed in this branch.
+Applies the bugs and improvements listed in `.ai-private/REVIEW.md`. Explicitly instructed to avoid modifying code external to this branch's changes.
 
 ```bash
 ai-cli claude fix "apply the security and performance suggestions"
 ```
 
-- **Context:** branch, status, commits, changed files (vs the repo's default branch)
+- **Context:** branch, status, commits, changed files (vs `master`)
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`, `.ai-private/REVIEW.md`
+- **Reads:** `.ai-private/REVIEW.md`, project conventions (smart mode)
 - **Output:** Source file changes
 
 ---
@@ -275,35 +258,32 @@ Analyzes lint output via `npm run check` and fixes issues in the changed files.
 ai-cli claude lint "fix all lint errors in the changed files"
 ```
 
-- **Context:** branch, status, commits, changed files
+- **Context:** branch, status, commits, changed files, live `npm run check` output
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`
+- **Reads:** project conventions (smart mode)
 - **Output:** Source file changes
 
 ---
 
 ### `planning` — Generate an implementation plan
 
-Creates a detailed implementation plan and writes it to `.ai-private/PLANNING.md`.
-
-`planning` runs the provider in its actual read-only **plan mode** (`claude --permission-mode plan`, `copilot --plan`, `cursor-agent --plan --trust`) instead of the usual skip-permissions flags — testing showed those flags silently override plan mode and let the model edit files anyway. Since the model has no ability to write files in this mode, it returns the plan as its response text, and `ai-cli` itself captures that output and saves it to `PLANNING.md`. If `--planning` is also set, the model appends the HTML visualization as a fenced HTML code block at the end of its response, which `ai-cli` splits out into its own file afterwards. See [True Read-Only Commands](#true-read-only-commands) — the same mechanism now also covers `review`, `audit`, `debug`, `playwright`, and `explain`.
+Creates a detailed implementation plan and writes it to `.ai-private/PLANNING.md`. If `--planning` is set, the model also produces an HTML visualization saved under `.ai-private/tasks/`.
 
 ```bash
 ai-cli claude planning "design a caching layer for the API endpoints"
 ai-cli claude --planning planning "design a caching layer for the API endpoints"
 ```
 
-- **Context:** branch, status, commits, changed files, source files (.ts/.tsx/.js), full file tree (depth 3, max 100)
+- **Context:** branch, status, commits, changed files, branch commits, source files (.ts/.tsx/.js), full file tree (depth 3, max 100)
 - **Model:** **opus**
-- **Reads:** `CLAUDE.md`, `.ai-private/PLANNING.md`
+- **Reads:** `.ai-private/PLANNING.md`, project conventions (full mode)
 - **Output:** `.ai-private/PLANNING.md`, `.ai-private/tasks/planning-{timestamp}.html` (only with `--planning`)
-- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
 
 ---
 
 ### `pr` — Generate a PR description
 
-Generates a pull request description for the current branch against the repo's default branch.
+Generates a pull request description for the current branch against `master`, following your team's PR template and extracting the ticket ID from the branch name.
 
 ```bash
 ai-cli claude pr "highlight the security improvements"
@@ -311,24 +291,23 @@ ai-cli claude pr "highlight the security improvements"
 
 - **Context:** branch, status, commits, changed files
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`
-- **Output:** PR description printed to terminal
+- **Reads:** `.github/PULL_REQUEST_TEMPLATE.md`
+- **Output:** PR description printed to terminal (Jira Link, What is changing?, How is this tested?, OWASP Top 10 Checklist), markdown formatted
 
 ---
 
 ### `playwright` — Analyze Playwright test failures
 
-Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch. With the `claude` provider, stale mocks/HAR files are hinted to be updated using the repo's `update-playwright-mocks` skill, one test at a time. Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
+Runs `npm run playwright`, analyzes Playwright E2E test output, and suggests fixes for failures related to this branch. Writes findings to `REVIEW.md`.
 
 ```bash
 ai-cli claude playwright "investigate the failing checkout e2e"
 ```
 
-- **Context:** branch, status, commits, changed files, Playwright config, changed test files
+- **Context:** branch, status, commits, changed files, Playwright config, changed test files, live `npm run playwright` output
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`
+- **Reads:** project conventions (smart mode)
 - **Output:** `.ai-private/REVIEW.md`
-- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
 
 ---
 
@@ -342,29 +321,24 @@ ai-cli claude refactor "apply the suggested performance optimizations"
 
 - **Context:** branch, status, staged files, unstaged files, changed files
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`, `.ai-private/REVIEW.md`
+- **Reads:** `.ai-private/REVIEW.md`, project conventions (smart mode)
 - **Output:** Source file changes, `.ai-private/REFACTOR.md`
 
 ---
 
 ### `review` — Code review
 
-Reviews all changed files against the repo's default branch, checks for bugs, style violations, missing tests, performance issues, and security concerns. With the `claude` provider, the security-concerns check is hinted to use the repo's `security-review` skill. Runs in the provider's real plan mode (see [True Read-Only Commands](#true-read-only-commands) below); its response is captured and saved to `REVIEW.md` automatically.
+Reviews all changed files against `master`, checks for bugs, style violations, missing tests, performance issues, and security concerns per the resolved project conventions. Keeps `.ai-private/LEARNED.md` (if present) in mind to avoid repeating old findings. Writes to `REVIEW.md`.
 
 ```bash
 ai-cli claude review "focus on security and error handling"
 ai-cli copilot review "check for performance regressions"
-
-# Higher-precision pass: 3 parallel lenses + a verification pass (see Deep Review Mode below)
-ai-cli claude --deep review "focus on security and error handling"
 ```
 
 - **Context:** branch, status, commits, changed files
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`, `.ai-private/REVIEW.md`
-- **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/review-{timestamp}.html`
-- **Structurally read-only** — runs in the provider's real plan mode, so it cannot modify source files even if instructed to
-- **Supports `--deep`** (see [Deep Review Mode](#deep-review-mode))
+- **Reads:** `.ai-private/REVIEW.md`, `.ai-private/LEARNED.md`, project conventions (smart mode)
+- **Output:** `.ai-private/REVIEW.md`, `.ai-private/tasks/review-{timestamp}.html` (only with `--planning`)
 
 ---
 
@@ -409,7 +383,7 @@ ai-cli claude types "fix the type errors introduced by the new API response shap
 
 - **Context:** branch, status, commits, changed files
 - **Model:** sonnet
-- **Reads:** `CLAUDE.md`
+- **Reads:** project conventions (smart mode)
 - **Output:** Source file changes
 
 ---
@@ -426,76 +400,36 @@ ai-cli cursor "summarize the open TODOs in this file"
 
 ---
 
-### `sync-db90` — Refresh standards via the DB90 MCP
+## Project Conventions Context
 
-`ai-cli` is a plain shell script; DB90 is an MCP tool, only reachable from inside an AI chat/agent session, not from a shell process. `sync-db90` can't call DB90 itself — it prints a ready-to-paste prompt so a Cursor/Claude Code chat in this repo can invoke DB90 on your behalf and refresh the standards `ai-cli` relies on: `CLAUDE.md`/`docs/` (via `initialize_rules`/`update_rules`), the Skills referenced by `skill_hint()` (via `setup_agents`), the MCP servers `suggestions` assumes (via `setup_mcp_servers`), and the PR template `pr` should follow (via `download_pr_templates`).
+`CLAUDE.md` and `.claude/rules/*.md` use bare `@relative/path` lines as Claude Code's own transclusion syntax — but only Claude Code's own process resolves those automatically. `copilot`/`cursor` would just see the literal `@docs/...` text. To keep every provider on equal footing, `ai-cli` resolves these imports itself in bash and injects the real doc content as a static context file, in one of two modes:
 
-```bash
-ai-cli sync-db90
-```
+- **`full`** (`feature`, `planning`, `explain`) — resolves `CLAUDE.md`'s own `@` references recursively, plus every doc referenced by a `.claude/rules/*.md` rule, regardless of what changed. Used when there's no reliable diff to scope against, or the command may need any part of the repo.
+- **`smart`** (`audit`, `debug`, `refactor`, `review`, `fix`, `types`, `lint`, `playwright`) — includes `AGENTS.md` directly, then cross-references this branch's changed files against each rule's `paths:` glob in `.claude/rules/*.md`, including only the docs whose rule actually matched. Mirrors Claude Code's own path-triggered rule loading, without paying for the full `docs/` corpus on every call.
 
-Takes no provider/command — it's a standalone maintenance helper, not an AI-provider call. Run it occasionally (new repo, new framework major version, or whenever `ai-cli`'s output feels out of sync with current team conventions), then paste the printed block into your AI chat.
-
----
-
-## Deep Review Mode
-
-`--deep` (available on `review` and `audit`) trades speed and cost for precision:
-
-1. Runs the command's normal instruction **3 times in parallel**, each restricted to one lens:
-   - correctness and bugs
-   - security vulnerabilities (OWASP top 10, injection, auth, secrets)
-   - performance, code quality, and adherence to project conventions in `docs/`
-   Each lens pass is report-only — it's explicitly told not to modify, fix, or refactor any file, even if the base instruction says otherwise.
-2. Runs one more pass that cross-checks all three lenses' findings against the actual diff, discards anything speculative or that doesn't hold up, merges duplicates reported by more than one lens, and writes only what survives to `REVIEW.md` (grouped by severity, noting which lens(es) found each item).
-
-```bash
-ai-cli claude --deep review "focus on the checkout flow"
-ai-cli claude --deep audit "focus on the payment retry logic"
-```
-
-This runs 4 AI calls total instead of 1, so expect roughly 4x the cost/latency of a normal `review`/`audit` — reserve it for changes where false positives or missed findings are expensive. Every lens sub-pass and the final merge pass inherit the parent command's real plan mode (see below), so they're structurally read-only too, not just by prompt wording.
-
----
-
-## True Read-Only Commands
-
-`planning`, `review`, `audit`, `debug`, `playwright`, and `explain` never modify files by design, so they run in each provider's actual read-only **plan mode** (`claude --permission-mode plan`, `copilot --plan`, `cursor-agent --plan --trust`) instead of the usual skip-permissions/allow-all flags — testing showed those flags silently override plan mode and let the model edit files anyway, so they must never be combined with it.
-
-Since the model has no ability to write files in this mode, it returns its findings/plan as response text, and `ai-cli` itself captures that output and saves it to whichever file the command would otherwise have asked the model to write:
-
-| Command                                    | Auto-saved to                     |
-| ------------------------------------------- | ---------------------------------- |
-| `planning`                                  | `.ai-private/PLANNING.md`          |
-| `review`, `audit`, `debug`, `playwright`    | `.ai-private/REVIEW.md`            |
-| `explain`                                   | *(nothing — printed to terminal)*  |
-
-If `--planning` is also set on a command that supports it (`planning`, `review`, `debug`), the model appends the HTML visualization as a fenced ` ```html ` code block at the end of its response, which `ai-cli` splits out into its own timestamped file under `.ai-private/tasks/` afterwards.
-
-A `--deep` lens sub-pass (see above) is the one exception that *doesn't* auto-save — its output is only merged by the final pass, not written to `REVIEW.md` on its own.
+Each resolved context is written to `.ai-private/.generated-docs-context.<pid>.md` (unique per invocation, so concurrent runs don't clobber each other) and mirrored to the fixed `.ai-private/.generated-docs-context.md` for manual inspection.
 
 ---
 
 ## Model Reference
 
 | Command       | Default Model | Notes                                                               |
-| ------------- | ------------- | ------------------------------------------------------------------- |
-| `debug`       | opus          | Most expensive; override with `--model sonnet` if cost is a concern |
-| `planning`    | opus          | Complex reasoning task                                              |
-| `explain`     | opus          | Best for architectural explanations                                 |
-| `audit`       | sonnet        | Bug-hunts the branch's changes against `BUG-HUNTING.md`; supports `--deep` |
-| `chain`       | n/a           | Each step uses its own command's default model; no model of its own |
-| `commit`      | sonnet        |                                                                     |
-| `feature`     | sonnet        |                                                                     |
-| `fix`         | sonnet        |                                                                     |
-| `lint`        | sonnet        | Uses `npm run check` to analyze lint issues in changed files        |
-| `playwright`  | sonnet        | Analyzes Playwright E2E failures and suggests fixes                 |
-| `pr`          | sonnet        |                                                                     |
-| `refactor`    | sonnet        |                                                                     |
-| `review`      | sonnet        | Supports `--deep`                                                  |
-| `suggestions` | sonnet        |                                                                     |
-| `test`        | sonnet        |                                                                     |
-| `types`       | sonnet        |                                                                     |
+| ------------- | ------------- | ---------------------------------------------------------------------- |
+| `debug`       | opus          | Most expensive; override with `--model sonnet` if cost is a concern    |
+| `planning`    | opus          | Complex reasoning task                                                 |
+| `explain`     | opus          | Best for architectural explanations                                    |
+| `audit`       | sonnet        | Bug-hunts the branch's changes against `BUG-HUNTING.md`                |
+| `commit`      | sonnet        |                                                                        |
+| `feature`     | sonnet        |                                                                        |
+| `fix`         | sonnet        |                                                                        |
+| `lint`        | sonnet        | Uses `npm run check` to analyze lint issues in changed files            |
+| `playwright`  | sonnet        | Analyzes Playwright E2E failures and suggests fixes                    |
+| `pr`          | sonnet        |                                                                        |
+| `refactor`    | sonnet        |                                                                        |
+| `review`      | sonnet        |                                                                        |
+| `suggestions` | sonnet        |                                                                        |
+| `test`        | sonnet        |                                                                        |
+| `types`       | sonnet        |                                                                        |
 
 **Claude model aliases:** `opus`, `sonnet`, `haiku`
 
@@ -511,21 +445,22 @@ A `--deep` lens sub-pass (see above) is the one exception that *doesn't* auto-sa
 ai-cli claude review "check for security issues"
          │
          ▼
-1. Parse flags (--dry-run, --model, --planning, --yes, --deep) and provider
-2. Validate: inside a git repo, CLAUDE.md exists
+1. Parse flags (--dry-run, --model, --planning) and provider
+2. Validate: inside a git repo
 3. Auto-create .ai-private/ if missing
          │
          ▼
 4. Load static context
-   • CLAUDE.md (always)
-   • .ai-private/*.md (command-specific)
+   • Command-specific .ai-private/*.md files
+   • Project conventions, resolved smart/full (see above) — some commands
+     instead read CLAUDE.md, docs/workflow/git.md, or the PR template directly
          │
          ▼
 5. Generate dynamic context
    • git branch, status, log
-   • git diff --name-only $BASE_BRANCH...HEAD (detected default branch, not hardcoded)
+   • git diff --name-only master...HEAD
    • File tree / diff stats (command-specific)
-   • Live command output (test command only)
+   • Live command output (test, lint, playwright)
    • PR info from gh pr view (suggestions only)
          │
          ▼
@@ -536,37 +471,31 @@ ai-cli claude review "check for security issues"
    ### USER REQUEST    — your prompt
          │
          ▼
-7. Execute AI provider (normal commands vs. true read-only plan mode —
-   see True Read-Only Commands above for which commands use which)
-   • claude  --print --dangerously-skip-permissions [--model X] "<prompt>"
-   • claude  --print --permission-mode plan          [--model X] "<prompt>"   (read-only)
-   • copilot --allow-all-tools --allow-all-paths --silent --add-dir $REPO_ROOT -p "<prompt>"
-   • copilot --plan --silent --add-dir $REPO_ROOT -p "<prompt>"                (read-only)
+7. Execute AI provider
+   • claude      --dangerously-skip-permissions [--model X] "<prompt>"
+   • copilot     --allow-all-tools --allow-all-paths --add-dir $REPO_ROOT [--model X] -i "<prompt>"
    • cursor-agent --print --force --trust --output-format stream-json \
-       --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'
-   • cursor-agent --print --plan --trust --output-format stream-json \
-       --stream-partial-output --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'  (read-only)
+       --stream-partial-output [--model X] --add-dir $REPO_ROOT "<prompt>" | jq -r -j '<stream formatter>'
          │
          ▼
 8. Output
    • AI response in terminal
-   • Generated .md files in .ai-private/ (read-only commands: captured from the model's
-     response and written by ai-cli itself, since plan mode can't write files)
-   • Interactive HTML plans in .ai-private/tasks/
+   • Generated .md files in .ai-private/ (written directly by the model, since
+     each provider runs with full file-access permissions)
+   • Interactive HTML plans in .ai-private/tasks/ (only with --planning)
 ```
-
-`chain` repeats steps 1–8 once per known command in the chain, in order, sharing the prompt and reusing whatever files each step already reads/writes.
 
 ### Context Functions
 
 | Function              | Used by                                                           | What it includes                                                                |
-| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `base_repo_context()` | all                                                               | Branch name, `git status`, last 8 commits                                       |
-| `review_context()`    | commit, fix, lint, pr, refactor, review, suggestions, test, types | `base_repo_context` + changed files vs the detected default branch              |
-| `feature_context()`   | explain, feature                                                  | `review_context` + file tree (depth 3, max 200)                                 |
-| `refactor_context()`  | audit, refactor                                                   | `base_repo_context` + staged, unstaged, and changed files                       |
-| `debug_context()`     | debug                                                             | `review_context` + diff stats + `package.json` scripts                          |
-| `planning_context()`  | planning                                                          | `review_context` + branch commits + source files + full tree (depth 3, max 100) |
+| --------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `base_repo_context()` | all                                                                | Branch name, `git status`, last 8 commits                                       |
+| `review_context()`    | commit, fix, lint, pr, review, suggestions, test, types             | `base_repo_context` + changed files vs `master`                                  |
+| `feature_context()`   | explain, feature                                                    | `review_context` + file tree (depth 3, max 200)                                 |
+| `refactor_context()`  | audit, refactor                                                     | `base_repo_context` + staged, unstaged, and changed files vs `master`            |
+| `debug_context()`     | debug                                                               | `review_context` + diff stats + `package.json` scripts                          |
+| `planning_context()`  | planning                                                            | `review_context` + branch commits + source files + full tree (depth 3, max 100) |
+| `playwright_context()`| playwright                                                          | `review_context` + Playwright config + changed test files                       |
 
 ---
 
@@ -588,39 +517,12 @@ The dry-run output shows:
 
 ---
 
-## Base Branch Detection
-
-Every context function that diffs "against the branch" resolves the repo's actual default branch instead of assuming `master`:
-
-1. The remote's recorded HEAD (`git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `git remote show origin` if that's unset).
-2. A local or remote `main` or `master` branch that exists, in that order.
-3. `master`, if none of the above resolved to anything (e.g. a brand-new repo with no commits yet).
-
-This runs once per invocation and is used everywhere a base branch was previously hardcoded (`review`, `audit`, `debug`, `fix`, `pr`, `playwright`, and the `planning`/`refactor` context builders).
-
----
-
-## Working with DB90
-
-DB90 (see the `sync-db90` command above) is Dualboot's internal MCP for company-wide standards — it's the provisioning layer for the conventions `ai-cli` consumes at runtime:
-
-| `ai-cli` assumes/reads...                                                                 | DB90 provisions/maintains it via...                          |
-| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| `CLAUDE.md` + `docs/` as static context, and "follow project conventions in docs/" in `review`/`refactor`/`feature` | `initialize_rules` / `update_rules`, with profiles matched to the detected stack (Next.js 14/15, Angular pre/post-18, NestJS 11, ...) |
-| The Skills referenced by `skill_hint()` (`security-review`, `update-playwright-mocks`) in `review`/`playwright` | `setup_agents`, which installs agent/skill bundles into `.claude/` and/or `.cursor/`   |
-| The GitHub MCP server `suggestions` asks the model to use                                  | `setup_mcp_servers`, which downloads the right `mcp.json` for the project type |
-| The generic Summary/Changes/Testing format `pr` generates                                  | `download_pr_templates`, which fetches the company's actual PR template (GitHub/Azure DevOps) |
-
-Run `ai-cli sync-db90` for a ready-to-paste prompt that walks an AI chat through refreshing all four.
-
----
-
 ## Token Efficiency
 
 Each command gathers only the context relevant to its task:
 
 | Command                          | Why scoped this way                                                     |
-| -------------------------------- | ----------------------------------------------------------------------- |
+| --------------------------------- | ----------------------------------------------------------------------- |
 | `commit`                         | Only needs the staged diff                                              |
 | `review`, `fix`, `lint`, `types` | Only needs changed files list                                           |
 | `audit`                          | Needs staged vs unstaged distinction plus the `BUG-HUNTING.md` criteria |
@@ -653,7 +555,7 @@ File trees are capped at 100–200 entries and limited to depth 3 to prevent con
 
 ### Adding a New Command
 
-1. Add the command name to `KNOWN_COMMANDS` (line ~122)
+1. Add the command name to `KNOWN_COMMANDS` (line ~175)
 2. Add a `context_function()` if the command needs custom context gathering
 3. Add a `case` block calling `run()` with the instruction, context, model, and files
 4. Add the command to `usage()`
